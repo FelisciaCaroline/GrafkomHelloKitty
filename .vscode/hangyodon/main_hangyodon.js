@@ -21,6 +21,8 @@ var COLOR = {
   white: hex("#f4f4f4"),   // bola mata
   black: hex("#1b1212"),   // pupil
   red:   hex("#e0706a"),   // gurita kecil
+  pinkDark: hex("#e393b2"),   // bibir bawah
+  patch:    hex("#d9a6c2"),   // bercak pink wajah gurita
 };
 
 // Urutan transform lokal (SELALU sama): rotZ -> rotX -> rotY, lalu translate.
@@ -172,10 +174,89 @@ function main() {
   var BODY_W = [0, -0.65, 0.03];
   var HEAD_W = [0, 1.61, 0];
   var HEAD_L = sub(HEAD_W, BODY_W);   // kepala relatif ke badan
+  
+  function smoothstep(e0, e1, x) {
+  var t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
+// Groove perut: busur "senyum" ∪. Posisi dalam koordinat WORLD (titik terendah busur)
+var R_ARC = 0.24, HALF_ANGLE = 1.05;
+var BELLY_ARCS = [
+  [-0.62, -0.22], [-0.02, -0.28], [0.58, -0.22],   // baris atas
+  [-0.36, -0.64], [0.42, -0.62]                    // baris bawah
+].map(function (a) { return [a[0], a[1] + R_ARC - BODY_W[1]]; });
+
+function bellyGroove(x, y, z) {
+  if (z < 0.2) return 0;
+  var front = smoothstep(0.2, 0.6, z);
+  var depth = 0;
+  for (var i = 0; i < BELLY_ARCS.length; i++) {
+    var dx = x - BELLY_ARCS[i][0], dy = y - BELLY_ARCS[i][1];
+    var r = Math.sqrt(dx * dx + dy * dy);
+    var ang = Math.atan2(dy, dx) + Math.PI / 2;
+    var along = smoothstep(HALF_ANGLE, HALF_ANGLE - 0.3, Math.abs(ang));
+    var across = Math.exp(-Math.pow((r - R_ARC) / 0.04, 2));
+    depth = Math.max(depth, along * across);
+  }
+  return 0.045 * depth * front;
+}
+
+// Goresan di muka telinga: 2 celah horizontal, hanya sisi luar
+function earSlit(x, y, z) {
+  if (y <= 0) return 0;
+  var along = smoothstep(0.24, 0.12, Math.abs(z + 0.02));
+  var across = Math.max(Math.exp(-Math.pow((x - 0.17) / 0.032, 2)), Math.exp(-Math.pow((x + 0.17) / 0.032, 2)));
+  return 0.05 * along * across;
+}
+
+// Sirip ekor: 3 celah searah kedalaman (z lokal), dari pangkal keluar ke ujung. Kedua sisi daun digores.
+function tailSlit(x, y, z) {
+  var along = smoothstep(0.22, 0.08, z) * smoothstep(-0.34, -0.18, z);
+  var across = Math.max(
+    Math.exp(-Math.pow((x + 0.15) / 0.03, 2)),
+    Math.exp(-Math.pow(x / 0.03, 2)),
+    Math.exp(-Math.pow((x - 0.15) / 0.03, 2)));
+  return 0.045 * along * across;
+}
+
+// Sirip belakang kepala (mesh sweep, koordinat lokal KEPALA): 3 garis horizontal menjauh dari kepala (-z),
+// hanya di bagian yang sudah keluar dari kepala, dan hanya di sisi lebar sirip (|x| besar).
+function finGroove(x, y, z) {
+  var side = smoothstep(0.07, 0.14, Math.abs(x));
+  var along = smoothstep(-1.15, -1.35, z) * smoothstep(-1.95, -1.75, z);
+  var across = Math.max(
+    Math.exp(-Math.pow((y - 0.36) / 0.03, 2)),
+    Math.exp(-Math.pow((y - 0.17) / 0.03, 2)),
+    Math.exp(-Math.pow((y + 0.02) / 0.03, 2)));
+  return 0.045 * side * along * across;
+}
+
+// Rusuk jambul: kurva vertikal di sisi DEPAN gelambir. ribs = [[x0, k], ...], kurva x = x0 + k*y²
+// (k>0 -> "(" , k<0 -> ")"), dari y = -0.1 sampai 0.4 di koordinat lokal elipsoid.
+function makeCrestRibs(ribs) {
+  return function (x, y, z) {
+    if (z < 0.05) return 0;
+    var front = smoothstep(0.05, 0.2, z);
+    var along = smoothstep(-0.12, 0.0, y) * smoothstep(0.42, 0.3, y);
+    var d = 0;
+    for (var i = 0; i < ribs.length; i++) {
+      var xc = ribs[i][0] + ribs[i][1] * y * y;
+      d = Math.max(d, Math.exp(-Math.pow((x - xc) / 0.035, 2)));
+    }
+    return 0.065 * front * along * d;
+  };
+}
+var crestBigRibs   = makeCrestRibs([[-0.13, 0.35], [0.1, -0.35]]);
+var crestSmallRibs = makeCrestRibs([[0.0, 0.3]]);
 
   // ---------------- BADAN (root) ----------------
   // Telur gemuk, agak kotak membulat. Lebar 2.5, tinggi 1.96, tebal 2.5.
-  part("body", null, builder.generateSuperEllipsoid(1.22, 1.13, 1.25, 2.3, 28, 40, COLOR.body, 0.12), BODY_W);
+  part("body", null,
+  builder.applyDisplacement(
+    builder.generateSuperEllipsoid(1.22, 1.13, 1.25, 2.3, 150, 260, COLOR.body, 0.12),
+    bellyGroove),
+  BODY_W);
 
   // ---------------- KEPALA ----------------
   // Lebar 2.72, tinggi 2.6, tebal 2.4. Kotak membulat (p=2.8), sedikit lebih sempit di atas, pusat y=1.61.
@@ -188,38 +269,41 @@ function main() {
       builder.generateEllipsoid(0.5, 0.52, 0.36, 18, 24, COLOR.white),
       [s * 0.62, -0.14, 0.98], [0, s * 0.2, 0]);                 // world: (±0.62, 1.47, 0.98)
     part("pupil" + L, "eye" + L,
-      builder.generateEllipsoid(0.085, 0.095, 0.06, 10, 14, COLOR.black),
+      builder.generateEllipsoid(0.11, 0.12, 0.07, 12, 16, COLOR.black),   // sebelumnya 0.085, 0.095, 0.06
       [-s * 0.2, -0.05, 0.31]);                                    // pupil agak ke arah tengah wajah
   });
 
   // ---------------- MULUT (elliptic paraboloid, paruh bebek lebar & pipih) ----------------
   // Lebar 2.4, tinggi 0.66, menonjol ~0.45 dari wajah, ujung sedikit turun.
   // Paraboloid aslinya "mangkuk" menghadap +Y -> diputar -90° di X supaya apex-nya menghadap +Z.
-  part("mouth", "head",
-    builder.generateEllipticParaboloid(1.22, 0.38, 0.9, 12, 40, COLOR.pink, true),
-    [0, -0.99, 1.38], [-Math.PI / 2 + 0.12, 0, 0]);                // world: (0, 0.59, 1.42)
-
+  part("mouthUpper", "head",
+    builder.generateEllipticParaboloid(1.18, 0.33, 0.9, 12, 40, COLOR.pink, true),
+    [0, -0.9, 1.5], [-Math.PI / 2 + 0.04, 0, 0]);
+  part("mouthLower", "head",
+    builder.generateEllipticParaboloid(1.1, 0.3, 0.9, 12, 40, COLOR.pinkDark, true),
+    [0, -1.08, 1.5], [-Math.PI / 2 + 0.14, 0, 0]);
   // ---------------- TELINGA (hyperbolic paraboloid tebal, daun oval berdiri di sisi kepala) ----------------
   // Tinggi 1.24, lebar 0.54, tebal 0.4. Menonjol ~0.4 dari siluet kepala, agak menghadap depan.
   [-1, 1].forEach(function (s) {
     var L = s < 0 ? "L" : "R";
     part("ear" + L, "head",
-      builder.generateHyperbolicParaboloid(0.64, 0.3, 0.10, 0.2, 14, 28, COLOR.blue),
+      builder.applyDisplacement(builder.generateHyperbolicParaboloid(0.64, 0.3, 0.10, 0.2, 40, 90, COLOR.blue), earSlit),
       [s * 1.56, -0.08, 0.1], [0, -s * 0.8, -s * Math.PI / 2]);  // world: (±1.55, 1.53, 0.12)
   });
 
   // ---------------- JAMBUL (2 gelambir di atas kepala, miring ke kanan layar) ----------------
   part("crestBig", "head",
-    builder.generateEllipsoid(0.42, 0.52, 0.36, 14, 20, COLOR.blue),
-    [-0.05, 1.49, 0.0], [0, 0, -0.12]);                             // world y=3.1
+    builder.applyDisplacement(builder.generateEllipsoid(0.42, 0.52, 0.36, 90, 140, COLOR.blue), crestBigRibs),
+    [-0.05, 1.49, 0.0], [0, 0, -0.12]);
   part("crestSmall", "head",
-    builder.generateEllipsoid(0.34, 0.44, 0.3, 14, 20, COLOR.blue),
+    builder.applyDisplacement(builder.generateEllipsoid(0.34, 0.44, 0.3, 90, 140, COLOR.blue), crestSmallRibs),
     [0.62, 1.39, 0.02], [0, 0, -0.5]);
 
   // ---------------- SIRIP BELAKANG KEPALA (sweep mengikuti kurva Bezier) ----------------
   // Kurva dari belakang atas kepala, melengkung keluar ke belakang, lalu kembali ke kepala bawah.
   function finPath(t) {
-    var p0 = [0, 0.58, -0.95], p1 = [0, -0.05, -2.05], p2 = [0, -0.55, -1.0];   // koordinat lokal kepala
+    var p0 = [0, 0.5, -0.75], p1 = [0, -0.05, -2.05], p2 = [0, -0.55, -1.0];   // di dalam finPath
+   // koordinat lokal kepala
     var mt = 1 - t;
     return [
       mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0],
@@ -227,24 +311,45 @@ function main() {
       mt * mt * p0[2] + 2 * mt * t * p1[2] + t * t * p2[2],
     ];
   }
-  part("dorsalFin", "head", builder.generateSweepFin(finPath, 0.21, 0.42, 22, 16, COLOR.blue), [0, 0, 0]);
+
+  part("dorsalFin", "head",
+    builder.applyDisplacement(builder.generateSweepFin(finPath, 0.21, 0.42, 110, 110, COLOR.blue), finGroove),
+    [0, 0, 0]);
 
   // ---------------- GURITA KECIL MERAH (di kiri-atas kepala di foto) ----------------
   part("octopus", "head",
-    builder.generateEllipsoid(0.36, 0.38, 0.34, 14, 20, COLOR.red),
-    [-0.95, 1.45, 0.25], [0, 0, 0.4]);
-  for (var k = 0; k < 5; k++) {
-    var ph = k * 2 * Math.PI / 5 + 0.3, tau = 0.5;
+  builder.generateEllipsoid(0.36, 0.38, 0.34, 20, 28, COLOR.red),
+  [-0.95, 1.55, 0.28], [0, 0, 0.4]);
+
+  for (var k = 0; k < 8; k++) {                              // 8 tentakel, melebar seperti rok
+    var ph = k * 2 * Math.PI / 8 + 0.2, tau = 0.95;
     part("tent" + k, "octopus",
-      builder.generateEllipsoid(0.1, 0.2, 0.1, 8, 10, COLOR.red),
-      [0.27 * Math.cos(ph), -0.3, 0.27 * Math.sin(ph)],
+      builder.generateEllipsoid(0.11, 0.25, 0.1, 10, 14, COLOR.red),
+      [0.25 * Math.cos(ph), -0.27, 0.25 * Math.sin(ph)],
       [-tau * Math.sin(ph), 0, tau * Math.cos(ph)]);
   }
 
+  function eyeArc(t) {                                       // mata tertutup ∩
+    var a = (8 + 164 * t) * Math.PI / 180;
+    return [0.095 * Math.cos(a), 0.1 * Math.sin(a), 0];
+  }
+  [-1, 1].forEach(function (s) {
+    part("octoEye" + (s < 0 ? "L" : "R"), "octopus",
+      builder.generateTube(eyeArc, 0.03, 20, 10, COLOR.black),
+      [s * 0.15, 0.04, 0.315], [0, s * 0.45, -s * 0.1]);
+  });
+
+  part("octoPatch", "octopus",                               // bercak pink + hidung
+    builder.generateEllipsoid(0.13, 0.095, 0.035, 14, 20, COLOR.patch),
+    [-0.01, -0.1, 0.35], [0, -0.1, 0.1]);
+  part("octoNose", "octoPatch",
+    builder.generateEllipsoid(0.04, 0.03, 0.025, 8, 12, COLOR.red),
+    [0, 0, 0.03]);
+
   // ---------------- SIRIP EKOR (daun tebal di punggung bawah) ----------------
   part("tailFin", "body",
-    builder.generateHyperbolicParaboloid(0.4, 0.42, 0.08, 0.2, 12, 24, COLOR.blue),
-    [0, -0.15, -1.5], [-0.3, 0, Math.PI / 2]);                       // world: (0, -0.8, -1.47)
+    builder.applyDisplacement(builder.generateHyperbolicParaboloid(0.4, 0.42, 0.08, 0.2, 50, 110, COLOR.blue), tailSlit),
+    [0, -0.15, -1.5], [-0.3, 0, Math.PI / 2]);                     // world: (0, -0.8, -1.47)
 
   // ---------------- LENGAN: sosis gemuk + telapak, menggantung & terayun ke depan ----------------
   // Pangkal di bahu (±1.1, 0.2, 0.1). Sudut: miring ke luar 0.2 rad, ke depan 0.85 rad.
