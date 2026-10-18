@@ -1,10 +1,16 @@
 // =====================================================================
+// libs.js  --  SATU-SATUNYA library matriks/vektor untuk seluruh proyek.
+// Gabungan libs.js (lama) + libs_1.js (LIBS + VEC3). Dimuat sebagai <script>
+// biasa, jadi LIBS & VEC3 tersedia global untuk semua file (termasuk module
+// hangyodon) tanpa perlu `import`.
+// =====================================================================
+// =====================================================================
 // LIBS — SAMA PERSIS dengan matrix library yang dipakai di kelas (pert6 /
 // EllipticParaboloid), tidak diubah. Ini yang dipakai untuk Pmatrix,
 // Vmatrix, dan Mmatrix tiap part (get_projection, get_I4, rotateX/Y/Z,
 // translateX/Y/Z, scaleX/Y/Z, multiply).
 // =====================================================================
-export var LIBS = {
+var LIBS = {
     get_json: function (url, func) {
         var xmlHttp = new XMLHttpRequest();
         xmlHttp.open("GET", url, true);
@@ -131,7 +137,7 @@ export var LIBS = {
 // normal permukaan (cross product, normalize, dsb). Bukan bagian dari
 // LIBS aslinya, sengaja dipisah biar LIBS tetap sama seperti di kelas.
 // =====================================================================
-export var VEC3 = {
+var VEC3 = {
     sub: function (a, b) {
         return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     },

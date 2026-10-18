@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sanrio World</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #cdeeff; }
+    canvas { display: block; touch-action: none; }
+    #hud {
+      position: fixed; left: 12px; bottom: 12px; padding: 8px 12px;
+      font: 13px/1.5 system-ui, sans-serif; color: #fff; background: rgba(0,0,0,.45);
+      border-radius: 8px; pointer-events: none; white-space: pre-line;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="mycanvas"></canvas>
+  <div id="hud"></div>
+
+  <!-- gl-matrix 2.x (global `mat4`), dipakai BadtzMaru.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+
+  <!-- LIBS + VEC3 (satu-satunya libs), dipakai Hangyodon -->
+  <script src="libs.js"></script>
+
+  <!-- environment harus dimuat SEBELUM world.js membuat WebGL context -->
+  <script src="kuromi/enviroment.js"></script>
+
+  <!-- Badtz-Maru -->
+  <script src="BadtzMaru/glUtils.js"></script>
+  <script src="BadtzMaru/BadtzMaru.js"></script>
+  <script src="BadtzMaru/badtz_entry.js"></script>
+
+  <!-- Kuromi -->
+  <script src="kuromi/kuromi.js"></script>
+
+  <!-- Hangyodon (ES module) di-import langsung oleh world.js -->
+  <script type="module" src="world.js"></script>
+</body>
+</html> 

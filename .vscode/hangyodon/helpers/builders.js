@@ -1,4 +1,4 @@
-import { VEC3 } from "./libs.js";
+// VEC3 sekarang global dari /libs.js (tidak perlu import)
 
 // =====================================================================
 // Semua generator punya layout vertex yang SAMA:
