@@ -1,5 +1,7 @@
 // Kuromi sebagai "factory": window.createKuromi(GL, cam)
 // Canvas, kamera, input, dan loop ada di world.js. Environment digambar otomatis oleh enviroment.js.
+// Animasi (idle + cheer) dihitung di sini memakai performance.now(), jadi world.js tidak perlu diubah.
+// Opsional: const k = window.createKuromi(GL, cam); k.cheer();  // memicu animasi senang manual
 (function () {
 
 function gridIndices(rows, cols) {
@@ -223,6 +225,7 @@ function sweepVertices(P, profile, steps, seg) {
     return v;
 }
 
+/*========================= MATRIX HELPERS (column-major) ========================= */
 function mul4(a, b) {
     var o = new Float32Array(16);
     for (var c = 0; c < 4; c++) {
@@ -235,6 +238,14 @@ function mul4(a, b) {
     return o;
 }
 
+function translateM(x, y, z) {
+    return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
+}
+
+function scaleM(x, y, z) {
+    return new Float32Array([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]);
+}
+
 function rotationMatrix(rx, ry, rz) {
     var cx = Math.cos(rx), sx = Math.sin(rx);
     var cy = Math.cos(ry), sy = Math.sin(ry);
@@ -243,6 +254,49 @@ function rotationMatrix(rx, ry, rz) {
     var RY = [cy, 0, -sy, 0, 0, 1, 0, 0, sy, 0, cy, 0, 0, 0, 0, 1];
     var RZ = [cz, sz, 0, 0, -sz, cz, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
     return mul4(RZ, mul4(RY, RX));
+}
+
+// putar "child" di sekitar titik pivot (px,py,pz), di dalam ruang parent
+function pivotRot(parent, px, py, pz, rx, ry, rz) {
+    return mul4(parent, mul4(translateM(px, py, pz), mul4(rotationMatrix(rx, ry, rz), translateM(-px, -py, -pz))));
+}
+
+// skala di sekitar y = py (squash & stretch dari telapak kaki)
+function pivotScale(parent, sx, sy, py) {
+    return mul4(parent, mul4(translateM(0, py, 0), mul4(scaleM(sx, sy, sx), translateM(0, -py, 0))));
+}
+
+/*========================= EASING HELPERS ========================= */
+function clamp01(x) { return Math.min(1, Math.max(0, x)); }
+function smooth(x) { x = clamp01(x); return x * x * (3 - 2 * x); }
+
+// Interpolasi keyframe [[t, nilai], ...] memakai spline Hermite (kecepatan halus, tidak berhenti di tiap key).
+// Di puncak/lembah/plateau kecepatan dibuat nol supaya tidak overshoot.
+function keys(t, k) {
+    var n = k.length;
+    if (t <= k[0][0]) return k[0][1];
+    if (t >= k[n - 1][0]) return k[n - 1][1];
+    var slope = function (i) {
+        if (i <= 0 || i >= n - 1) return 0;
+        var a = k[i][1] - k[i - 1][1], b = k[i + 1][1] - k[i][1];
+        if (a * b <= 0) return 0;
+        return (k[i + 1][1] - k[i - 1][1]) / (k[i + 1][0] - k[i - 1][0]);
+    };
+    for (var i = 1; i < n; i++) {
+        if (t < k[i][0]) {
+            var h = k[i][0] - k[i - 1][0];
+            var u = (t - k[i - 1][0]) / h;
+            var u2 = u * u, u3 = u2 * u;
+            return (2 * u3 - 3 * u2 + 1) * k[i - 1][1] + (u3 - 2 * u2 + u) * h * slope(i - 1)
+                 + (-2 * u3 + 3 * u2) * k[i][1] + (u3 - u2) * h * slope(i);
+        }
+    }
+    return k[n - 1][1];
+}
+
+function easeOutBack(x) {
+    var c1 = 1.70158, c3 = c1 + 1, y = x - 1;
+    return 1 + c3 * y * y * y + c1 * y * y;
 }
 
 function removeWhiteBackground(p, w, h) {
@@ -378,6 +432,7 @@ window.createKuromi = function (GL, cam) {
     var sphere = makeMesh(makeSphere(1, 30, 30));
     var cone = makeMesh(makeCone(1, 2, 30));
     var diamond = makeMesh(makeDiamond(1, 0.22, 0.78, 8));
+    var star = makeMesh(makeDiamond(1, 1, 1, 4));   // dipakai untuk kilau bintang
     var leg = makeMesh(makeLeg(32, 28));
 
     var SKULL_CY = 2.15, SKULL_HH = 0.8;
@@ -409,6 +464,20 @@ window.createKuromi = function (GL, cam) {
             [0.46, 0.88, 1.60]
         ], smileProfile, 20, 8),
         indices: gridIndices(21, 8)
+    });
+
+    // Busur mata tertutup "^" (dipakai saat berkedip & senang). Bentuk unit, diskalakan saat draw.
+    var arcMesh = makeMesh({
+        vertices: sweepVertices([
+            [-1, -0.35, 0],
+            [-0.55, 0.75, 0],
+            [0.55, 0.75, 0],
+            [1, -0.35, 0]
+        ], function (t) {
+            var r = 0.14 * (0.35 + 0.65 * Math.sin(Math.PI * t));
+            return [r, r];
+        }, 24, 8),
+        indices: gridIndices(25, 8)
     });
 
     /*========================= SKULL TEXTURE ========================= */
@@ -481,34 +550,57 @@ window.createKuromi = function (GL, cam) {
         GL.drawElements(GL.TRIANGLES, mesh.count, GL.UNSIGNED_SHORT, 0);
     };
 
+    var setM = function (m) { GL.uniformMatrix4fv(_Mmatrix, false, m); };
+
     /*======================== CHARACTER DRAWING HELPERS ======================== */
     var BLACK = [0.12, 0.12, 0.16];
     var WHITE = [0.97, 0.97, 0.97];
     var PINK = [0.98, 0.62, 0.78];
+    var BLUSH = [1.0, 0.66, 0.78];
+    var MOUTH = [0.46, 0.10, 0.22];
+    var STAR_Y = [1.0, 0.95, 0.55];
+    var STAR_O = [1.0, 0.62, 0.42];
+    var HEART = [0.95, 0.25, 0.42];
+
+    var FEET_Y = -2.1;          // titik tumpu squash & stretch
+    var NECK = [0, 0.35, 0];    // pivot kepala
 
     var faceZ = function (x, y) {
         var q = 1 - (x / 1.5) * (x / 1.5) - (y - 1.3) * (y - 1.3);
         return 0.8 + 0.9 * Math.sqrt(Math.max(q, 0));
     };
 
-    var drawEar = function (side) {
-        var a = 0.6;
+    // delta = lean telinga (rad). Positif = kedua telinga condong ke +x (kanan).
+    var drawEar = function (side, delta, flare) {
+        var a = 0.6 - side * delta + flare;
         var H = 2;
         var base = [side * 1, 2.7, -0.1];
-        var sinA = 0.564642;
-        var cosA = 0.825335;
+        var sinA = Math.sin(a);
+        var cosA = Math.cos(a);
 
         draw(diamond, base, [0.95, H, 1], BLACK, [0, 0, -side * a]);
         draw(sphere, [base[0] + side * sinA * (H - 0.05), base[1] + cosA * (H - 0.05), base[2]], [0.26, 0.26, 0.24], BLACK);
     };
 
-    var drawEye = function (mesh, cx, cy, rx, ry, side) {
-        draw(mesh, [0, 0, 0], [1, 1, 1], BLACK);
-
-        var lx = cx + side * rx * 1.0, ly = cy + ry * 0.62;
-        draw(sphere, [lx, ly, faceZ(lx, ly) + 0.02], [0.12, 0.024, 0.03], BLACK, [0, 0, side * 0.45]);
-        var lx2 = cx + side * rx * 1.3, ly2 = cy + ry * 0.10;
-        draw(sphere, [lx2, ly2, faceZ(lx2, ly2) + 0.02], [0.11, 0.024, 0.03], BLACK, [0, 0, side * 0.15]);
+    // o: 1 = terbuka, 0 = tertutup. k: kelengkungan busur (0.4 kedip, 1 senang)
+    var drawEye = function (mesh, cx, cy, rx, ry, side, o, k) {
+        if (o > 0.08) {
+            draw(mesh, [0, cy * (1 - o), 0], [1, o, 1], BLACK);
+            var lash = clamp01((o - 0.45) / 0.55);
+            if (lash > 0.03) {
+                var lx = cx + side * rx * 1.0, ly = cy + ry * 0.62 * o;
+                draw(sphere, [lx, ly, faceZ(lx, ly) + 0.02], [0.12 * lash, 0.024 * lash, 0.03], BLACK, [0, 0, side * 0.45]);
+                var lx2 = cx + side * rx * 1.3, ly2 = cy + ry * 0.10 * o;
+                draw(sphere, [lx2, ly2, faceZ(lx2, ly2) + 0.02], [0.11 * lash, 0.024 * lash, 0.03], BLACK, [0, 0, side * 0.15]);
+            }
+        }
+        var a = smooth((0.4 - o) / 0.4);
+        if (a > 0.02) {
+            draw(arcMesh,
+                [cx, cy - 0.02, faceZ(cx, cy) + 0.05],
+                [rx * 1.35 * a, ry * 1.2 * k * a, rx * 1.35],
+                BLACK, [0, side * 0.33, 0]);
+        }
     };
 
     var drawCollar = function () {
@@ -534,9 +626,136 @@ window.createKuromi = function (GL, cam) {
         draw(cone, [1.8, 0.2, -1.0], [0.32, 0.45, 0.14], BLACK, [0, 0, -0.49]);
     };
 
+    // kilau 4 sudut: dua belah ketupat tipis bersilang. fat > 1 = lebih gemuk (kilau oranye)
+    var drawStar = function (x, y, z, sz, col, spin, fat) {
+        fat = fat || 1;
+        var a = 0.55 * sz, w = 0.11 * sz * fat;
+        for (var i = 0; i < 2; i++) {
+            var th = spin + i * Math.PI / 2;
+            draw(star, [x + a * Math.sin(th), y - a * Math.cos(th), z], [w, a, w], col, [0, 0, th]);
+        }
+    };
+
+    var drawHeart = function (x, y, z, s, col) {
+        draw(sphere, [x - 0.42 * s, y + 0.28 * s, z], [0.52 * s, 0.52 * s, 0.30 * s], col);
+        draw(sphere, [x + 0.42 * s, y + 0.28 * s, z], [0.52 * s, 0.52 * s, 0.30 * s], col);
+        draw(cone, [x, y + 0.25 * s, z], [0.98 * s, 0.62 * s, 0.30 * s], col, [0, 0, Math.PI]);
+    };
+
+    /*========================= ANIMATION STATE ========================= */
+    // Timeline disalin dari video referensi (30 fps, 8.16 dtk), c = detik sejak cheer mulai (= 6.1 dtk di video):
+    //  0.0 - 6.1 dtk : idle. Kepala goyang kiri-kanan (siklus ~4.1 dtk), satu kedip datar di 0.17 dtk
+    //  c 0.0 - 0.7   : membungkuk pelan, kepala turun & menunduk, telinga mengembang, tangan melebar
+    //  c 0.7 - 0.9   : pop naik cepat (sedikit overshoot), mulut terbuka, tangan merapat ke dada
+    //  c 0.95        : mata ^ ^
+    //  c 1.1 / 1.4 / 1.55 / 1.75 : kilau kecil, kilau putih besar, kilau oranye, hati
+    var IDLE_LEN = 6.1, CHEER_LEN = 4.4, HAPPY_END = 3.4;
+
+    // goyang kepala (-1..1) per fase siklus 4.1 dtk: lembah (tahan) -> naik cepat ~1.1 dtk -> puncak (tahan) -> turun pelan
+    var SWAY_KEYS = [[0, -1], [0.03, -1], [0.27, 1], [0.34, 1], [1, -1]];
+    var SWAY_PERIOD = 4.1, SWAY_OFFSET = 0.5;
+
+    // kurva cheer (ukur dari video): squash badan, menunduk kepala (rad), lebar tangan ke samping
+    var SQ_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.35], [0.5, 0.6], [0.6, 0.65], [0.7, 0.55], [0.8, 0.0], [0.9, -0.35], [1.1, -0.2], [1.5, -0.1], [3.2, -0.06], [4.2, 0]];
+    var PITCH_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.2], [0.5, 0.36], [0.6, 0.4], [0.7, 0.35], [0.8, 0.05], [0.9, -0.1], [1.1, -0.06], [1.5, -0.05], [3.2, -0.03], [4.2, 0]];
+    var ARMOUT_KEYS = [[0, 0], [0.15, 0.15], [0.35, 0.6], [0.55, 1.0], [0.68, 1.0], [0.8, 0.2], [0.9, 0]];
+
+    // dekorasi muncul berurutan seperti di video (posisi dalam ruang model, di depan telinga)
+    var DECOR = [
+        { on: 1.10, x: 2.45, y: 1.35, z: 1.8, size: 0.30, type: 'star', col: STAR_Y, k: 0.0 },
+        { on: 1.35, x: 2.75, y: 0.55, z: 1.8, size: 0.22, type: 'star', col: STAR_Y, k: 2.1 },
+        { on: 1.40, x: -0.45, y: 4.95, z: 2.0, size: 0.95, type: 'star', col: [1.0, 1.0, 0.92], k: 4.0 },
+        { on: 1.55, x: 0.55, y: 4.60, z: 2.0, size: 0.55, type: 'star', col: STAR_O, fat: 1.9, k: 1.2 },
+        { on: 1.75, x: 1.50, y: 4.60, z: 2.0, size: 0.46, type: 'heart', col: HEART, k: 3.1 }
+    ];
+
+    var t0 = performance.now() / 1000;
+    var A = {
+        last: null, cycStart: t0,
+        cheering: false, cheerStart: 0,
+        breath: 0, armPh: 0, tailPh: 0, bobPh: 0,
+        happy: 0, eyeHappy: 0, earRoll: 0
+    };
+
+    var triggerCheer = function () {
+        if (A.cheering) return;
+        A.cheering = true;
+        A.cheerStart = performance.now() / 1000;
+    };
+
+    var update = function (now) {
+        var dt = A.last === null ? 0.016 : Math.min(0.05, Math.max(0.0005, now - A.last));
+        A.last = now;
+        var damp = function (cur, target, lambda) { return cur + (target - cur) * (1 - Math.exp(-lambda * dt)); };
+
+        /* ---- jadwal: idle -> cheer -> idle ---- */
+        if (!A.cheering && now - A.cycStart >= IDLE_LEN) { A.cheering = true; A.cheerStart = now; }
+        var c = A.cheering ? now - A.cheerStart : -1;
+        if (A.cheering && c >= CHEER_LEN) { A.cheering = false; A.cycStart = now; c = -1; }
+        var ti = now - A.cycStart;
+
+        /* ---- envelope senang ---- */
+        var happyOn = (c > 0.78 && c < HAPPY_END);
+        A.happy = damp(A.happy, happyOn ? 1 : 0, happyOn ? 9 : 3.2);
+        A.eyeHappy = damp(A.eyeHappy, (c > 0.95 && c < HAPPY_END) ? 1 : 0, (c > 0.95 && c < HAPPY_END) ? 22 : 8);
+        var h = A.happy;
+
+        /* ---- fase kontinu ---- */
+        A.breath += dt * 2 * Math.PI / 3.4;
+        A.armPh += dt * 2 * Math.PI * (0.55 + 0.9 * h);
+        A.tailPh += dt * 2 * Math.PI * (0.70 + 1.2 * h);
+        A.bobPh += dt * 1.0;
+
+        var br = Math.sin(A.breath);
+
+        /* ---- goyang idle ---- */
+        var ia = A.cheering ? 1 - smooth(c / 0.9) : smooth(ti / 1.2);
+        var ph = (((ti - SWAY_OFFSET) / SWAY_PERIOD) % 1 + 1) % 1;
+        var sway = keys(ph, SWAY_KEYS) * ia;
+
+        /* ---- kurva cheer ---- */
+        var sq = 0, pk = 0, ao = 0;
+        if (c >= 0) { sq = keys(c, SQ_KEYS); pk = keys(c, PITCH_KEYS); ao = keys(c, ARMOUT_KEYS); }
+
+        var bob = Math.sin(2 * Math.PI * A.bobPh);
+        var S = {
+            c: c, happy: h, sq: sq, ao: ao,
+            hop: h * 0.025 * (1 + bob),
+            jump: 0,
+            sy: 1 + 0.012 * br - 0.17 * sq,
+            sxz: 1 - 0.006 * br + 0.10 * sq
+        };
+
+        /* ---- kepala ---- */
+        S.roll = -0.06 * sway + h * 0.07 * Math.sin(A.bobPh * Math.PI + 0.7);
+        S.yaw = 0.10 * sway + h * 0.05 * Math.sin(A.bobPh * Math.PI * 0.7);
+        S.pitch = 0.025 * br + pk - 0.04 * h;
+        S.headY = 0.03 * Math.sin(A.breath - 0.6) + 0.065 * sway - 0.05 * sq + h * 0.04 * bob;
+
+        // telinga: tertinggal dari gerak kepala + mengembang saat menunduk
+        A.earRoll = damp(A.earRoll, S.roll, 7);
+        S.earDelta = (A.earRoll - S.roll) * 2.4 + 0.05 * Math.sin(A.breath * 1.7) + 0.06 * h * Math.sin(now * 14);
+        S.earFlare = 0.06 * sq + 0.75 * Math.max(pk, 0);
+
+        /* ---- kedip: sekali per siklus idle, garis datar ---- */
+        var bp = (ti - 0.16) / 0.15;
+        var blinkO = (!A.cheering && bp > 0 && bp < 1) ? 1 - clamp01(1.7 * Math.sin(Math.PI * bp)) : 1;
+        S.eyeO = Math.min(blinkO, 1 - A.eyeHappy);
+        S.eyeK = 0.15 + 0.85 * A.eyeHappy;
+
+        /* ---- mulut & pipi ---- */
+        S.mouth = h * (0.95 + 0.05 * Math.sin(now * 8));
+        S.blush = clamp01(h * 1.2);
+        return S;
+    };
+
     /*========================= RENDER (dipanggil world.js tiap frame) ========================= */
     // M = model matrix (posisi + arah hadap + skala), disusun oleh world.js
     var render = function (M) {
+        var now = performance.now() / 1000;
+        var S = update(now);
+        var h = S.happy;
+
         GL.useProgram(SHADER_PROGRAM);
         for (var a = 0; a < 8; a++) GL.disableVertexAttribArray(a);
         GL.enableVertexAttribArray(_position);
@@ -546,43 +765,93 @@ window.createKuromi = function (GL, cam) {
         // Pmatrix & Vmatrix harus diset SEBELUM draw pertama: enviroment.js membacanya dari sini
         GL.uniformMatrix4fv(_Pmatrix, false, cam.P);
         GL.uniformMatrix4fv(_Vmatrix, false, cam.V);
-        GL.uniformMatrix4fv(_Mmatrix, false, M);
 
         GL.activeTexture(GL.TEXTURE0);
         GL.bindTexture(GL.TEXTURE_2D, skullTex);
         GL.uniform1i(_uTex, 0);
 
-        // Head / Face
+        // ---- matriks root: squash/stretch dari telapak kaki ----
+        var root = pivotScale(mul4(M, translateM(0, S.hop + S.jump, 0)), S.sxz, S.sy, FEET_Y);
+
+        /* ===== BADAN ===== */
+        setM(root);
+        draw(sphere, [0, -0.30, 0], [0.90, 1.0, 1.0], WHITE);
+        drawCollar();
+        draw(leg, [-0.50, -1.20, 0.05], [0.50, 0.90, 0.50], WHITE);
+        draw(leg, [0.50, -1.20, 0.05], [0.50, 0.90, 0.50], WHITE);
+
+        /* ===== LENGAN (pivot di bahu) =====
+           idle: tangan terlipat dekat dada | membungkuk: melebar ke samping | senang: merapat ke dada */
+        for (var si = 0; si < 2; si++) {
+            var side = si === 0 ? -1 : 1;
+            var swing = Math.sin(A.armPh + (side > 0 ? 0 : 1.1));
+            var rx = (-0.20 - 0.25 * S.ao) * (1 - h) - 1.0 * h + 0.07 * swing * h + 0.03 * swing * (1 - h);
+            var ry = -side * (0.10 * (1 - h) + 0.42 * h);
+            var rz = side * ((0.08 + 0.05 * swing + 0.60 * S.ao) * (1 - h));
+            setM(pivotRot(root, side * 0.95, -0.05, 0.2, rx, ry, rz));
+            draw(sphere, [side * 1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, -side * 0.2]);
+            draw(sphere, [side * 1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
+        }
+
+        /* ===== EKOR ===== */
+        var wag = Math.sin(A.tailPh);
+        setM(pivotRot(root, 0.30, -1.10, -0.60, 0, 0.25 * wag * (1 + h), 0.08 * Math.sin(A.tailPh * 0.5 + 1) + 0.15 * Math.max(S.sq, 0)));
+        drawTail();
+
+        /* ===== KEPALA (pivot di leher) ===== */
+        var head = pivotRot(mul4(root, translateM(0, S.headY, 0)), NECK[0], NECK[1], NECK[2], S.pitch, S.yaw, S.roll);
+        setM(head);
+
         draw(sphere, [0, 1.6, 0], [1.9, 1.55, 1.6], BLACK);
         draw(sphere, [0, 1.3, 0.8], [1.5, 1.0, 0.9], WHITE);
 
         draw(peakMesh, [0, 0, 0], [1, 1, 1], BLACK);
         draw(skullMesh, [0, 0, 0], [1, 1, 1], SKULL_TINT);
 
-        drawEar(-1);
-        drawEar(1);
+        drawEar(-1, S.earDelta, S.earFlare);
+        drawEar(1, S.earDelta, S.earFlare);
 
-        drawEye(eyeL, -0.74, 1.17, 0.18, 0.22, -1);
-        drawEye(eyeR, 0.74, 1.17, 0.21, 0.25, 1);
+        drawEye(eyeL, -0.74, 1.17, 0.18, 0.22, -1, S.eyeO, S.eyeK);
+        drawEye(eyeR, 0.74, 1.17, 0.21, 0.25, 1, S.eyeO, S.eyeK);
 
         draw(sphere, [0, 1.03, 1.67], [0.17, 0.10, 0.07], PINK);
-        draw(smile, [0, -0.10, 0], [0.3, 1, 1], BLACK);
 
-        draw(sphere, [0, -0.30, 0], [0.90, 1.0, 1.0], WHITE);
-        drawCollar();
+        // pipi merona
+        if (S.blush > 0.03) {
+            for (var bi = 0; bi < 2; bi++) {
+                var bs = bi === 0 ? -1 : 1;
+                draw(sphere, [bs * 1.0, 0.92, faceZ(bs * 1.0, 0.92) - 0.02],
+                    [0.20 * S.blush, 0.12 * S.blush, 0.06], BLUSH, [0, bs * 0.55, 0]);
+            }
+        }
 
-        draw(sphere, [-1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, -0.2]);
-        draw(sphere, [1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, 0.2]);
-        draw(sphere, [-1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
-        draw(sphere, [1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
+        // senyum -> mulut terbuka
+        if (S.mouth < 0.97) draw(smile, [0, -0.10, 0], [0.3 * (1 - 0.9 * S.mouth), 1, 1], BLACK);
+        if (S.mouth > 0.03) {
+            var m = S.mouth;
+            draw(sphere, [0, 0.69, 1.53], [0.15 * Math.sqrt(m), 0.11 * m, 0.10], MOUTH);
+        }
 
-        draw(leg, [-0.50, -1.20, 0.05], [0.50, 0.90, 0.50], WHITE);
-        draw(leg, [0.50, -1.20, 0.05], [0.50, 0.90, 0.50], WHITE);
+        /* ===== DEKORASI: kilau & hati muncul berurutan (ikut M saja, tidak ikut squash) ===== */
+        setM(M);
+        if (S.c >= 0) {
+            var hv = clamp01(h * 2);
+            for (var i = 0; i < DECOR.length; i++) {
+                var d = DECOR[i];
+                var u = (S.c - d.on) / 0.3;
+                if (u <= 0 || hv <= 0.01) continue;
+                var sc = d.size * easeOutBack(clamp01(u)) * hv * (1 + 0.12 * Math.sin(now * 7 + d.k));
+                var yy = d.y + 0.06 * Math.sin(now * 2.2 + d.k);
+                if (d.type === 'heart') drawHeart(d.x, yy, d.z, sc, d.col);
+                else drawStar(d.x, yy, d.z, sc, d.col, 0, d.fat);
+            }
+        }
 
-        drawTail();
+        setM(M); // kembalikan supaya environment tidak terpengaruh
     };
 
-    return { draw: render };
+    return { draw: render, cheer: triggerCheer };
+
 };
 
 })();
