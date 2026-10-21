@@ -2,6 +2,8 @@ import * as builder from "./helpers/builders.js";
 import { LIBS } from "./helpers/libs.js";
 import { animMatrix, normalMatrix } from "./helpers/transform.js";
 import { evaluateIdle } from "./helpers/idle_animation.js";
+import { evaluateHappy, evaluateWalk, evaluateWalkCircle } from "./helpers/emote_animation.js";
+import { generateHeart, generateSparkle } from "./helpers/effects.js";
 
 // =====================================================================
 // Bentuk (shape), tata letak (layout), hierarchy, displacement, + IDLE ANIMATION
@@ -25,6 +27,8 @@ var COLOR = {
   red:   hex("#e0706a"),   // gurita kecil
   pinkDark: hex("#e393b2"),   // bibir bawah
   patch:    hex("#d9a6c2"),   // bercak pink wajah gurita
+  heart: hex("#ff3b5c"),   // hati (happy emote)
+  spark: [1.5, 1.4, 1.0],  // kilau bintang (happy emote); sengaja >1 supaya tampak berpendar
 };
 
 // Urutan transform lokal (SELALU sama): rotZ -> rotX -> rotY, lalu translate.
@@ -422,6 +426,31 @@ function main() {
       [s * 0.11, -0.3, 0.24], [0, s * 0.12, 0]);                    // telapak: dasar di y = -2.1
   });
 
+    // ---------------- MATA SENANG ^ ^ (dipakai Happy & Walk; tersembunyi saat tidak dianimasikan) ----------------
+  function happyEyeArc(t) {
+    var a = (12 + 156 * t) * Math.PI / 180;
+    var x = 0.3 * Math.cos(a), y = -0.2 + 0.24 * Math.sin(a);
+    var z = 0.36 * Math.sqrt(Math.max(0, 1 - Math.pow(x / 0.5, 2) - Math.pow(y / 0.52, 2))) + 0.03;   // ikut lengkung bola mata
+    return [x, y, z];
+  }
+  [-1, 1].forEach(function (s) {
+    var L = s < 0 ? "L" : "R";
+    part("happyEye" + L, "eye" + L, builder.generateTube(happyEyeArc, 0.055, 24, 10, COLOR.black), [0, 0, 0]);
+    PARTS["happyEye" + L].hiddenDefault = true;
+  });
+
+  // ---------------- EFEK HAPPY EMOTE: 1 hati besar, 3 hati kecil, 6 kilau (anak dari kepala) ----------------
+  part("heartBig", "head", generateHeart(0.5, 0.2, 12, 48, COLOR.heart), [0.05, 2.2, -0.3]);
+  PARTS.heartBig.hiddenDefault = true;
+  [[-1.95, 1.2, 0.6], [2.0, 1.5, 0.6], [0.9, 2.0, 0.8]].forEach(function (p, i) {
+    part("heartS" + i, "head", generateHeart(0.22, 0.08, 8, 32, COLOR.heart), p);
+    PARTS["heartS" + i].hiddenDefault = true;
+  });
+  [[-2.1, 0.9, 0.3], [-1.9, 0.1, 0.4], [2.1, 1.5, 0.3], [1.5, 2.1, 0.4], [-1.2, 2.2, 0.4], [2.2, 0.3, 0.4]].forEach(function (p, i) {
+    part("spark" + i, "head", generateSparkle(0.32, 0.07, COLOR.spark), p);
+    PARTS["spark" + i].hiddenDefault = true;
+  });
+
   /*========================= HIERARCHY: world matrix dihitung TIAP FRAME =========================
     world = parentWorld * (A_anim * local), A_anim = animasi di sekitar pivot (kosong kalau tidak ada animasi).
     Karena anak selalu dikalikan dengan world parent-nya, gerak kepala otomatis membawa mata, mulut, telinga,
@@ -453,21 +482,29 @@ function main() {
   GL.clearColor(0.867, 0.867, 0.867, 1.0);   // abu-abu terang, sama seperti latar foto referensi
   var STRIDE = 4 * 9;
 
-  /*========================= STATE IDLE =========================
-    playing : tombol Idle ditekan (loop terus sampai di-stop)
-    weight  : 0..1, mendekati target secara halus -> fade-in saat play & fade-out kembali ke pose diam saat stop
-    time    : waktu animasi (detik) */
-  var idle = { playing: false, weight: 0, time: 0 };
-  var idleBtn = document.getElementById("idleBtn");
-  function setIdle(on) {
-    idle.playing = on;
-    if (idleBtn) {
-      idleBtn.textContent = on ? "■ Stop idle" : "▶ Idle";
-      idleBtn.classList.toggle("active", on);
-    }
+  /*========================= STATE ANIMASI (Idle + 3 emote) =========================
+    Hanya 1 animasi aktif pada satu waktu. Menekan tombol lain = animasi lama fade-out dulu, lalu yang baru fade-in. */
+  var ANIMS = {
+    idle:   { evaluate: evaluateIdle,       btn: "idleBtn",   key: "i", on: "■ Stop idle",   off: "▶ Idle" },
+    happy:  { evaluate: evaluateHappy,      btn: "happyBtn",  key: "h", on: "■ Stop happy",  off: "♥ Happy" },
+    walk:   { evaluate: evaluateWalk,       btn: "walkBtn",   key: "w", on: "■ Stop walk",   off: "▶ Walk" },
+    circle: { evaluate: evaluateWalkCircle, btn: "circleBtn", key: "c", on: "■ Stop circle", off: "⟳ Circle" }
+  };
+  var anim = { current: null, requested: null, weight: 0, time: 0 };
+  function setAnim(name) {                       // name = "idle" | "happy" | "walk" | "circle" | null
+    anim.requested = (name && anim.requested !== name) ? name : null;   // tekan lagi = stop
+    Object.keys(ANIMS).forEach(function (k) {
+      var b = document.getElementById(ANIMS[k].btn), on = anim.requested === k;
+      if (b) { b.textContent = on ? ANIMS[k].on : ANIMS[k].off; b.classList.toggle("active", on); }
+    });
   }
-  if (idleBtn) idleBtn.addEventListener("click", function () { setIdle(!idle.playing); });
-  window.addEventListener("keydown", function (e) { if (e.key === "i" || e.key === "I") setIdle(!idle.playing); });
+  Object.keys(ANIMS).forEach(function (k) {
+    var b = document.getElementById(ANIMS[k].btn);
+    if (b) b.addEventListener("click", function () { setAnim(k); });
+  });
+  window.addEventListener("keydown", function (e) {
+    Object.keys(ANIMS).forEach(function (k) { if (e.key.toLowerCase() === ANIMS[k].key) setAnim(k); });
+  });
 
   var lastTime = performance.now();
 
@@ -475,12 +512,15 @@ function main() {
     var dt = Math.min((now - lastTime) / 1000, 0.1);
     lastTime = now;
 
-    // bobot menuju 1 (play) / 0 (stop) secara eksponensial -> transisi mulus
-    idle.weight += ((idle.playing ? 1 : 0) - idle.weight) * (1 - Math.exp(-dt * 5));
-    if (!idle.playing && idle.weight < 0.002) idle.weight = 0;
-    if (idle.playing || idle.weight > 0) idle.time += dt;
+        if (anim.current !== anim.requested) {          // ganti animasi / stop: fade-out dulu
+      anim.weight += (0 - anim.weight) * (1 - Math.exp(-dt * 9));
+      if (anim.weight < 0.02) { anim.weight = 0; anim.current = anim.requested; anim.time = 0; }
+    } else {                                        // animasi yang sama: fade-in (atau tetap 0 kalau null)
+      anim.weight += ((anim.current ? 1 : 0) - anim.weight) * (1 - Math.exp(-dt * 5));
+    }
+    if (anim.current) anim.time += dt;
 
-    var deltas = idle.weight > 0 ? evaluateIdle(idle.time, idle.weight) : {};
+    var deltas = (anim.current && anim.weight > 0) ? ANIMS[anim.current].evaluate(anim.time, anim.weight) : {};
     updateWorld(deltas);
 
     GL.viewport(0, 0, CANVAS.width, CANVAS.height);
@@ -513,9 +553,15 @@ function main() {
 
   // API untuk digabung ke environment tim / debug
   window.hangyodon = {
-    playIdle: function () { setIdle(true); },
-    stopIdle: function () { setIdle(false); },
-    seek: function (t) { idle.time = t; idle.weight = 1; idle.playing = true; }   // lompat ke detik ke-t (untuk debug/screenshot)
+        play: function (name) { if (anim.requested !== name) setAnim(name); },        // "idle" | "happy" | "walk" | "circle"
+    stop: function () { setAnim(null); },
+    playIdle: function () { this.play("idle"); },
+    stopIdle: function () { this.stop(); },
+    seek: function (t, name) {                                                    // lompat ke detik ke-t (debug/screenshot)
+      name = name || anim.requested || "idle";
+      if (anim.requested !== name) setAnim(name);
+      anim.current = name; anim.time = t; anim.weight = 1;
+    }
   };
   window.__setTheta = function (t) { THETA = t; };   // dipakai untuk screenshot/debug
 }
