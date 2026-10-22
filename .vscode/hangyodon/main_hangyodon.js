@@ -402,17 +402,17 @@ function main() {
     builder.applyDisplacement(builder.generateHyperbolicParaboloid(0.4, 0.42, 0.08, 0.2, 50, 110, COLOR.blue), tailSlit),
     [0, -0.15, -1.5], [-0.3, 0, Math.PI / 2], [0, -0.15, -1.25]);                   // world: (0, -0.8, -1.47)
 
-  // ---------------- LENGAN: sosis gemuk + telapak, menggantung & terayun ke depan ----------------
+  // ---------------- LENGAN: ellips gemuk + telapak, menggantung & terayun ke depan ----------------
   // Pangkal di bahu (±1.1, 0.2, 0.1). Sudut: miring ke luar 0.2 rad, ke depan 0.85 rad.
   [-1, 1].forEach(function (s) {
     var L = s < 0 ? "L" : "R";
     part("arm" + L, "body",
-      builder.generateEllipsoid(0.3, 0.6, 0.3, 14, 20, COLOR.body),
-      sub([s * 1.14, -0.2, 0.48], BODY_W), [-0.85, 0, s * 0.14],
+      builder.generateEllipsoid(0.3, 0.8, 0.3, 14, 20, COLOR.body),
+      sub([s * 1.14, -0.48, 0.48], BODY_W), [-0.65, 0, s * 0.14],
       sub([s * 1.12, 0.3, 0.1], BODY_W));                           // pivot animasi: bahu
     part("hand" + L, "arm" + L,
       builder.applyDisplacement(builder.generateEllipsoid(0.34, 0.32, 0.28, 80, 120, COLOR.body), handGroove),
-      [0, -0.62, 0], null, [0, -0.45, 0]);                                               // di ujung lengan (sumbu lokal lengan)
+      [0, -0.7, 0], null, [0, -0.45, 0]);                                               // di ujung lengan (sumbu lokal lengan)
   });
 
   // ---------------- KAKI: pangkal gemuk + telapak besar pipih ----------------
@@ -422,7 +422,7 @@ function main() {
       builder.generateEllipsoid(0.42, 0.42, 0.45, 14, 20, COLOR.body),
       sub([s * 0.74, -1.68, 0.1], BODY_W));
     part("foot" + L, "leg" + L,
-      builder.applyDisplacement(builder.generateEllipsoid(0.7, 0.28, 0.8, 80, 120, COLOR.body), toeGroove),
+      builder.applyDisplacement(builder.generateEllipsoid(0.7, 0.32, 0.8, 80, 120, COLOR.body), toeGroove),
       [s * 0.11, -0.3, 0.24], [0, s * 0.12, 0]);                    // telapak: dasar di y = -2.1
   });
 
