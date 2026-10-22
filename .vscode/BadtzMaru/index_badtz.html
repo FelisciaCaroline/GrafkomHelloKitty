@@ -13,18 +13,13 @@
             padding: 10px; border-radius: 5px; pointer-events: none;
             font-size: 14px; line-height: 1.4;
         }
-        .nav {
-            position: absolute; top: 10px; right: 10px;
-            background: rgba(0,0,0,0.4); color: white; font-family: sans-serif;
-            padding: 10px 16px; border-radius: 5px; text-decoration: none; font-size: 14px;
-        }
     </style>
     <!-- Matrix Library CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
     
     <!-- IMPOR FILE JAVASCRIPT TERPISAH -->
     <script src="glUtils.js"></script>
-    <script src="pengu.js"></script>
+    <script src="BadtzMaru.js"></script>
 </head>
 <body>
     <canvas id="glcanvas"></canvas>
@@ -138,9 +133,9 @@
     let vMatrix = mat4.create();
     
     // VARIABEL WAKTU DIKUNCI (Tidak ditambah/di-increment lagi agar animasi mati)
+    const staticTime = 0.0; 
 
-    function render(now) {
-        const time = (now || 0) * 0.001;   // milidetik -> detik
+    function render() {
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.clearColor(1.0, 0.47, 0.7, 1.0); 
         gl.enable(gl.DEPTH_TEST);
@@ -155,7 +150,7 @@
         mat4.rotate(vMatrix, vMatrix, cameraAngleY, [0, 1, 0]); 
         
         // Render Karakter dengan waktu konstan (staticTime = 0.0) sehingga diam kaku
-        badtz.render(pMatrix, vMatrix, time, 0.0, 0.0, 0.0);
+        badtz.render(pMatrix, vMatrix, staticTime, 0.0, 0.0, 0.0);
 
         requestAnimationFrame(render);
     }
@@ -167,6 +162,5 @@
         canvas.height = window.innerHeight;
     });
 </script>
-<a href="dance.html" class="nav">Dance →</a>
 </body>
 </html>
