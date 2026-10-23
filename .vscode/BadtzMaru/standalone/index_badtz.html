@@ -1,0 +1,172 @@
+<!-- File: index.html -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title></title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #FF7EB3; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #info {
+            position: absolute; top: 10px; left: 10px; color: white;
+            font-family: sans-serif; background: rgba(0,0,0,0.4);
+            padding: 10px; border-radius: 5px; pointer-events: none;
+            font-size: 14px; line-height: 1.4;
+        }
+        .nav {
+            position: absolute; top: 10px; right: 10px;
+            background: rgba(0,0,0,0.4); color: white; font-family: sans-serif;
+            padding: 10px 16px; border-radius: 5px; text-decoration: none; font-size: 14px;
+        }
+    </style>
+    <!-- Matrix Library CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+    
+    <!-- IMPOR FILE JAVASCRIPT TERPISAH -->
+    <script src="../glUtils.js"></script>
+    <script src="../BadtzMaru.js"></script>
+</head>
+<body>
+    <canvas id="glcanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('glcanvas');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+
+    // Shader Utama
+    const vsSource = `
+        attribute vec4 aVertexPosition; attribute vec3 aVertexNormal; attribute vec4 aVertexColor;
+        uniform mat4 uModelViewMatrix; uniform mat4 uProjectionMatrix; uniform mat4 uNormalMatrix;
+        varying vec4 vColor; varying vec3 vLightWeighting;
+        void main() {
+            gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+            vec3 normal = normalize((uNormalMatrix * vec4(aVertexNormal, 1.0)).xyz);
+            float directional = max(dot(normal, normalize(vec3(0.4, 1.0, 0.6))), 0.0);
+            vLightWeighting = vec3(0.4) + vec3(0.6) * directional;
+            vColor = aVertexColor;
+        }
+    `;
+    const fsSource = `
+        precision mediump float; varying vec4 vColor; varying vec3 vLightWeighting;
+        void main() { gl_FragColor = vec4(vColor.rgb * vLightWeighting, vColor.a); }
+    `;
+
+    const shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, loadShader(gl, gl.VERTEX_SHADER, vsSource));
+    gl.attachShader(shaderProgram, loadShader(gl, gl.FRAGMENT_SHADER, fsSource));
+    gl.linkProgram(shaderProgram); gl.useProgram(shaderProgram);
+
+    const programInfo = {
+        attribLocations: {
+            vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+            vertexNormal: gl.getAttribLocation(shaderProgram, 'aVertexNormal'),
+            vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
+        },
+        uniformLocations: {
+            projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
+            modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+            normalMatrix: gl.getUniformLocation(shaderProgram, 'uNormalMatrix'),
+        },
+    };
+    gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+    gl.enableVertexAttribArray(programInfo.attribLocations.vertexNormal);
+    gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+
+    // ===============================================
+    // VARIABEL KONTROL KAMERA INTERAKTIF (ORBIT & PAN)
+    // ===============================================
+    let cameraAngleX = 0.1;   
+    let cameraAngleY = 0.0;   
+    let cameraDistance = 13.0;
+    let cameraPanX = 0.0;     
+    let cameraPanY = -0.4;    
+
+    let isDragging = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
+    canvas.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+    });
+
+    window.addEventListener('mouseup', () => { isDragging = false; });
+
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        let deltaX = e.clientX - lastMouseX;
+        let deltaY = e.clientY - lastMouseY;
+
+        cameraAngleY += deltaX * 0.008;
+        cameraAngleX += deltaY * 0.008;
+        cameraAngleX = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, cameraAngleX));
+
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        cameraDistance += e.deltaY * 0.01;
+        cameraDistance = Math.max(3.0, Math.min(30.0, cameraDistance));
+    }, { passive: false });
+
+    window.addEventListener('keydown', (e) => {
+        let panSpeed = 0.3;
+        switch(e.key.toLowerCase()) {
+            case 'arrowleft':
+            case 'a': cameraPanX -= panSpeed; break;
+            case 'arrowright':
+            case 'd': cameraPanX += panSpeed; break;
+            case 'arrowup':
+            case 'w': cameraPanY += panSpeed; break;
+            case 'arrowdown':
+            case 's': cameraPanY -= panSpeed; break;
+        }
+    });
+
+    // ===============================================
+    // INSTANSIASI KARAKTER
+    // ===============================================
+    const badtz = new BadtzMaru(gl, programInfo);
+    badtz.init();
+
+    let pMatrix = mat4.create();
+    let vMatrix = mat4.create();
+    
+    // VARIABEL WAKTU DIKUNCI (Tidak ditambah/di-increment lagi agar animasi mati)
+
+    function render(now) {
+        const time = (now || 0) * 0.001;   // milidetik -> detik
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(1.0, 0.47, 0.7, 1.0); 
+        gl.enable(gl.DEPTH_TEST);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        mat4.perspective(pMatrix, 45 * Math.PI / 180, canvas.width / canvas.height, 0.1, 100.0);
+        
+        // Pembentukan Matriks Kamera Dinamis (Interaktif tetap berjalan)
+        mat4.identity(vMatrix);
+        mat4.translate(vMatrix, vMatrix, [cameraPanX, cameraPanY, -cameraDistance]);
+        mat4.rotate(vMatrix, vMatrix, cameraAngleX, [1, 0, 0]); 
+        mat4.rotate(vMatrix, vMatrix, cameraAngleY, [0, 1, 0]); 
+        
+        // Render Karakter dengan waktu konstan (staticTime = 0.0) sehingga diam kaku
+        badtz.render(pMatrix, vMatrix, time, 0.0, 0.0, 0.0);
+
+        requestAnimationFrame(render);
+    }
+
+    render();
+
+    window.addEventListener('resize', () => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    });
+</script>
+<a href="dance.html" class="nav">Dance →</a>
+</body>
+</html>

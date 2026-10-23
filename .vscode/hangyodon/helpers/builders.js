@@ -1,4 +1,3 @@
-import { VEC3 } from "./libs.js";
 
 // =====================================================================
 // Semua generator punya layout vertex yang SAMA:
@@ -172,20 +171,20 @@ export function generateHyperbolicParaboloid(a, c, height, thickness, stack, ste
 // ---------------------------------------------------------------------
 // CYLINDER (tidak dipakai di versi simpel; disimpan kalau nanti perlu)
 // ---------------------------------------------------------------------
-export function generateCylinder(radius, height, stack, step, color = [0.6, 0.85, 0.85]) {
-    var vertices = [];
-    for (var i = 0; i <= stack; i++) {
-        var y = (i / stack) * height;
-        for (var j = 0; j <= step; j++) {
-            var v = j / step * 2 * Math.PI - Math.PI;
-            var x = radius * Math.cos(v);
-            var z = radius * Math.sin(v);
-            var n = VEC3.normalize([x, 0, z]);
-            vertices.push(x, y, z, n[0], n[1], n[2], color[0], color[1], color[2]);
-        }
-    }
-    return { vertices: vertices, faces: buildGridFaces(stack, step) };
-}
+// export function generateCylinder(radius, height, stack, step, color = [0.6, 0.85, 0.85]) {
+//     var vertices = [];
+//     for (var i = 0; i <= stack; i++) {
+//         var y = (i / stack) * height;
+//         for (var j = 0; j <= step; j++) {
+//             var v = j / step * 2 * Math.PI - Math.PI;
+//             var x = radius * Math.cos(v);
+//             var z = radius * Math.sin(v);
+//             var n = VEC3.normalize([x, 0, z]);
+//             vertices.push(x, y, z, n[0], n[1], n[2], color[0], color[1], color[2]);
+//         }
+//     }
+//     return { vertices: vertices, faces: buildGridFaces(stack, step) };
+// }
 
 // ---------------------------------------------------------------------
 // SWEEP CURVE (sirip punggung) -- mesh mengikuti kurva Bezier
@@ -239,3 +238,105 @@ export function generateSweepFin(pathFn, rx, ry, segments, step, color = [0.3, 0
     }
     return { vertices: vertices, faces: buildGridFaces(segments, step) };
 }
+
+// ---------------------------------------------------------------------
+// DISPLACEMENT  -- menggeser vertex mesh APA PUN ({vertices, faces}) sepanjang
+// normalnya. fn(x, y, z) -> jumlah geser (positif = masuk/cekung, negatif = menonjol),
+// dengan (x, y, z) = posisi vertex ASLI di koordinat lokal mesh.
+// Setelah digeser, normal dihitung ulang dari segitiga (area-weighted).
+// Vertex yang posisinya sama (seam grid, kutub, tepi telinga) digabung supaya
+// tidak ada garis sambungan pada shading.
+// Pakai mesh dengan resolusi cukup rapat (stack/step besar), kalau tidak
+// groove kecil tidak akan terlihat.
+// ---------------------------------------------------------------------
+export function applyDisplacement(geo, fn) {
+    var v = geo.vertices;
+    var count = v.length / 9;
+    var keys = new Array(count);
+    var origN = new Array(count);
+    var key = function (x, y, z) {
+        return Math.round(x * 1e4) + "," + Math.round(y * 1e4) + "," + Math.round(z * 1e4);
+    };
+
+    for (var i = 0; i < count; i++) {
+        var o = i * 9;
+        var x = v[o], y = v[o + 1], z = v[o + 2];
+        keys[i] = key(x, y, z);
+        origN[i] = [v[o + 3], v[o + 4], v[o + 5]];
+        var amt = fn(x, y, z);
+        if (amt) {
+            v[o] = x - v[o + 3] * amt;
+            v[o + 1] = y - v[o + 4] * amt;
+            v[o + 2] = z - v[o + 5] * amt;
+        }
+    }
+
+    var acc = {};
+    for (var f = 0; f < geo.faces.length; f += 3) {
+        var ia = geo.faces[f], ib = geo.faces[f + 1], ic = geo.faces[f + 2];
+        var pa = [v[ia * 9], v[ia * 9 + 1], v[ia * 9 + 2]];
+        var pb = [v[ib * 9], v[ib * 9 + 1], v[ib * 9 + 2]];
+        var pc = [v[ic * 9], v[ic * 9 + 1], v[ic * 9 + 2]];
+        var fn_ = VEC3.cross(VEC3.sub(pb, pa), VEC3.sub(pc, pa));   // panjangnya = 2 x luas -> area-weighted
+        [ia, ib, ic].forEach(function (idx) {
+            var a = acc[keys[idx]] || (acc[keys[idx]] = [0, 0, 0]);
+            a[0] += fn_[0]; a[1] += fn_[1]; a[2] += fn_[2];
+        });
+    }
+
+    for (var k = 0; k < count; k++) {
+        var n = acc[keys[k]];
+        var len = n ? Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) : 0;
+        if (len < 1e-9) continue;
+        n = [n[0] / len, n[1] / len, n[2] / len];
+        // arah winding bisa terbalik -> samakan dengan normal asli
+        if (n[0] * origN[k][0] + n[1] * origN[k][1] + n[2] * origN[k][2] < 0) n = [-n[0], -n[1], -n[2]];
+        v[k * 9 + 3] = n[0]; v[k * 9 + 4] = n[1]; v[k * 9 + 5] = n[2];
+    }
+    return geo;
+}
+
+// ---------------------------------------------------------------------
+// TUBE (selang melengkung dengan kedua ujung membulat) -- dipakai untuk mata
+// tertutup "^ ^" pada gurita. Penampang lingkaran radius `radius` disapu
+// sepanjang kurva pathFn(t), mengecil di kedua ujung (profil sqrt(1 - s^6)).
+// Kurva diasumsikan di bidang XY (frame memakai sumbu Z sebagai acuan).
+// ---------------------------------------------------------------------
+export function generateTube(pathFn, radius, segments, step, color = [0.1, 0.1, 0.1]) {
+    var vertices = [];
+    var eps = 1e-3;
+    var taperFn = function (t) {
+        var s = 2 * Math.min(Math.max(t, 0), 1) - 1;
+        return Math.sqrt(Math.max(0, 1 - Math.pow(Math.abs(s), 6)));
+    };
+
+    for (var i = 0; i <= segments; i++) {
+        var t = i / segments;
+        var tA = Math.min(t + eps, 1), tB = Math.max(t - eps, 0);
+        var center = pathFn(t);
+        var d = VEC3.sub(pathFn(tA), pathFn(tB));
+        var speed = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) / (tA - tB);
+        var tangent = VEC3.normalize(d);
+
+        var side = VEC3.normalize(VEC3.cross(tangent, [0, 0, 1]));
+        var up = VEC3.normalize(VEC3.cross(side, tangent));
+
+        var taper = taperFn(t);
+        var dTaperDl = (taperFn(tA) - taperFn(tB)) / (tA - tB) / speed;   // turunan taper terhadap panjang busur
+
+        for (var j = 0; j <= step; j++) {
+            var th = j / step * 2 * Math.PI - Math.PI;
+            var rad = [side[0] * Math.cos(th) + up[0] * Math.sin(th),
+                       side[1] * Math.cos(th) + up[1] * Math.sin(th),
+                       side[2] * Math.cos(th) + up[2] * Math.sin(th)];
+            var r = radius * taper;
+            var n = VEC3.normalize([rad[0] - radius * dTaperDl * tangent[0],
+                                    rad[1] - radius * dTaperDl * tangent[1],
+                                    rad[2] - radius * dTaperDl * tangent[2]]);
+            vertices.push(center[0] + rad[0] * r, center[1] + rad[1] * r, center[2] + rad[2] * r,
+                          n[0], n[1], n[2], color[0], color[1], color[2]);
+        }
+    }
+    return { vertices: vertices, faces: buildGridFaces(segments, step) };
+}
+
