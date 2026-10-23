@@ -41,9 +41,9 @@ var cam = { P: perspective(40, CANVAS.width / CANVAS.height, 1, 600), V: new Flo
 // foot = y telapak kaki di koordinat lokal karakter, scale = ukuran relatif
 // Urutan array = nomor tombol: 0 Kuromi, 1 Badtz-Maru, 2 Hangyodon
 var chars = [
-    { name: "Kuromi",     obj: window.createKuromi(GL, cam), x: -7, scale: 1.0, foot: -2.10 },
-    { name: "Badtz-Maru", obj: window.createBadtz(GL, cam),  x:  0, scale: 1.2, foot: -2.57 },
-    { name: "Hangyodon",  obj: createHangyodon(GL, cam),     x:  7, scale: 1.1, foot: -2.26 }
+    { name: "Kuromi",     obj: window.createKuromi(GL, cam), x: 14, z: -20, yawDeg:  25, scale: 1.0, foot: -2.10 },
+    { name: "Badtz-Maru", obj: window.createBadtz(GL, cam),  x:  3, z:   4, yawDeg:  90, scale: 1.2, foot: -2.57 },
+    { name: "Hangyodon",  obj: createHangyodon(GL, cam),     x: 20, z:   6, yawDeg: 135, scale: 1.1, foot: -2.26 }
 ];
 
 // Aksi per karakter: key -> fungsi. Tambah animasi baru cukup menambah satu baris di sini.
@@ -60,7 +60,7 @@ chars[2].actions = [
     { key: "j", label: "Walk",   run: function (o) { o.play("walk"); } },
     { key: "k", label: "Circle", run: function (o) { o.play("circle"); } }
 ];
-chars.forEach(function (c) { c.z = 0; c.y = 0; c.yaw = 0; c.M = new Float32Array(16); });
+chars.forEach(function (c) { c.y = 0; c.yaw = (c.yawDeg || 0) * Math.PI / 180; c.M = new Float32Array(16); });
 
 // Model = Translate * RotateY(yaw) * Scale(s), column-major
 function modelMatrix(c) {
@@ -80,7 +80,7 @@ var CAM_MIN_D = 4, CAM_MAX_D = 60;
 var PITCH_MIN = -0.08, PITCH_MAX = 1.2;
 var dYaw = 0, dPitch = 0, FRICTION = 0.08;
 var drag = false, x_prev = 0, y_prev = 0;
-var tgt = [chars[0].x, 1.5, 0];
+var tgt = [chars[0].x, 1.5, chars[0].z];
 var pan = [0, 0, 0];                  // geseran titik bidik oleh W A S D Q E
 
 var clampPitch = function () { camPitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, camPitch)); };
