@@ -1,6 +1,6 @@
 // File: glUtils.js
 
-// GEN 1: Ellipsoid standar (Kepala, Badan, Perut, Mata, Pupil, Kaki, Mulut Bawah)
+// GEN 1: Ellipsoid standar (Kepala, Badan, Perut, Mata, Pupil, Tangan, Mulut Bawah)
 function createEllipsoid(rx, ry, rz, color, topCutRatio = 0.0, latBands = 40, longBands = 40) {
     let pos = [], norm = [], col = [], idx = [];
     let startLatNumber = Math.floor(latBands * topCutRatio); 
@@ -31,7 +31,7 @@ function createEllipsoid(rx, ry, rz, color, topCutRatio = 0.0, latBands = 40, lo
     return { pos, norm, col, idx };
 }
 
-// GEN 2: Elliptic Paraboloid (Digunakan untuk Rambut Duri & Tangan sesuai permintaan baru)
+// GEN 2: Elliptic Paraboloid (Digunakan untuk Rambut Duri)
 function createEllipticParaboloid(rx, rz, height, color, segmentsU = 20, segmentsV = 20) {
     let pos = [], norm = [], col = [], idx = [];
     for (let i = 0; i <= segmentsU; i++) {
@@ -101,6 +101,49 @@ function createBeak(color, segmentsT = 30, segmentsRot = 20) {
             idx.push(p1, p2, p1 + 1, p1 + 1, p2, p2 + 1);
         }
     }
+    return { pos, norm, col, idx };
+}
+
+// GEN 4: Hyperboloid of Two Sheets (dipakai SATU lembar saja = setengahnya) -> Telapak kaki
+// Persamaan: y²/c² - x²/a² - z²/b² = 1. Parametrik satu lembar:
+//   x = a·sinh(v)·cos(t),  y = c·cosh(v),  z = b·sinh(v)·sin(t),  v >= 0
+// Di sini lembarnya dibalik (puncak di atas, melebar ke bawah) dan dipotong di v = vMax,
+// sehingga dasarnya berupa elips rata (jari-jari a·sinh(vMax) x b·sinh(vMax)) di tinggi baseY.
+function createHyperboloidSheet(a, b, c, vMax, baseY, color, segV = 20, segT = 40) {
+    let pos = [], norm = [], col = [], idx = [];
+    for (let i = 0; i <= segV; i++) {
+        let v = vMax * i / segV;
+        let sh = Math.sinh(v), ch = Math.cosh(v);
+        for (let j = 0; j <= segT; j++) {
+            let t = j * 2 * Math.PI / segT;
+            let cc = Math.cos(t), ss = Math.sin(t);
+            pos.push(a * sh * cc, baseY + c * (Math.cosh(vMax) - ch), b * sh * ss);
+            // normal = (dP/dv x dP/dt) dibalik ke arah luar
+            let nx = b * c * sh * sh * cc, ny = a * b * ch * sh, nz = a * c * sh * sh * ss;
+            let len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+            if (len < 1e-6) norm.push(0, 1, 0);          // tepat di puncak
+            else norm.push(nx/len, ny/len, nz/len);
+            col.push(...color);
+        }
+    }
+    for (let i = 0; i < segV; i++) {
+        for (let j = 0; j < segT; j++) {
+            let p1 = i * (segT + 1) + j;
+            let p2 = p1 + segT + 1;
+            idx.push(p1, p2, p1 + 1, p1 + 1, p2, p2 + 1);
+        }
+    }
+    // Tutup dasar (datar, menghadap ke bawah) supaya tidak berlubang
+    let rimStart = pos.length / 3;
+    let shR = Math.sinh(vMax);
+    for (let j = 0; j <= segT; j++) {
+        let t = j * 2 * Math.PI / segT;
+        pos.push(a * shR * Math.cos(t), baseY, b * shR * Math.sin(t));
+        norm.push(0, -1, 0); col.push(...color);
+    }
+    let center = pos.length / 3;
+    pos.push(0, baseY, 0); norm.push(0, -1, 0); col.push(...color);
+    for (let j = 0; j < segT; j++) idx.push(center, rimStart + j + 1, rimStart + j);
     return { pos, norm, col, idx };
 }
 
