@@ -1,4 +1,3 @@
-import { LIBS } from "./libs.js";
 
 // =====================================================================
 // Utilitas transformasi untuk animasi (TIDAK mengubah libs.js).

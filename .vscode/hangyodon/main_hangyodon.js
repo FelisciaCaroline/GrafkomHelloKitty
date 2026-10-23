@@ -1,5 +1,4 @@
 import * as builder from "./helpers/builders.js";
-import { LIBS } from "./helpers/libs.js";
 import { animMatrix, normalMatrix } from "./helpers/transform.js";
 import { evaluateIdle } from "./helpers/idle_animation.js";
 import { evaluateHappy, evaluateWalk, evaluateWalkCircle } from "./helpers/emote_animation.js";
@@ -52,10 +51,10 @@ function xf(pos, rot) {
 // bersama badan karena urutan perkaliannya terbalik.
 function mul(parentWorld, local) { return LIBS.multiply(local, parentWorld); }
 
-function main() {
-  var CANVAS = document.getElementById("mycanvas");
-  var GL = CANVAS.getContext("webgl", { antialias: true });
-  if (!GL) { alert("WebGL context cannot be initialized"); return false; }
+// Dipanggil oleh world.js:  const h = createHangyodon(GL, cam);  h.draw(M, t);
+// GL  = satu-satunya WebGL context milik world.js
+// cam = { P, V } milik world.js (dibaca TIAP frame, jadi kamera boleh bergerak)
+export function createHangyodon(GL, cam) {
 
   /*========================= SHADERS (Phong) =========================*/
   var shader_vertex_source = `
@@ -126,47 +125,6 @@ function main() {
   var _Vmatrix = GL.getUniformLocation(PROG, "Vmatrix");
   var _Mmatrix = GL.getUniformLocation(PROG, "Mmatrix");
   var _Nmatrix = GL.getUniformLocation(PROG, "Nmatrix");
-
-  /*========================= CAMERA =========================*/
-  var PROJMATRIX, VIEWMATRIX;
-  function resize() {
-    var dpr = window.devicePixelRatio || 1;
-    CANVAS.width = Math.floor(CANVAS.clientWidth * dpr);
-    CANVAS.height = Math.floor(CANVAS.clientHeight * dpr);
-    var aspect = CANVAS.width / CANVAS.height;
-    PROJMATRIX = LIBS.get_projection(24, aspect, 1, 100);
-    // jarak kamera otomatis supaya seluruh karakter (tinggi ~6) selalu muat
-    // di layar landscape maupun portrait
-    var dist = Math.max(9.2 * aspect, 7.0);
-    VIEWMATRIX = LIBS.get_I4();
-    LIBS.translateY(VIEWMATRIX, -0.55);   // titik pandang: tengah karakter (sedikit di bawah, ruang untuk tombol)
-    LIBS.translateZ(VIEWMATRIX, -dist);
-  }
-  window.addEventListener("resize", resize);
-  resize();
-
-  /*========================= KONTROL: HANYA PUTAR VERTIKAL (sumbu Y) =========================*/
-  var THETA = 0;
-  var drag = false, x_prev = 0;
-  CANVAS.addEventListener("pointerdown", function (e) {
-    drag = true; x_prev = e.clientX; CANVAS.setPointerCapture(e.pointerId); CANVAS.classList.add("dragging");
-  });
-  CANVAS.addEventListener("pointermove", function (e) {
-    if (!drag) return;
-    THETA += (e.clientX - x_prev) * 2 * Math.PI / CANVAS.clientWidth;
-    x_prev = e.clientX;
-  });
-  var end = function () { drag = false; CANVAS.classList.remove("dragging"); };
-  CANVAS.addEventListener("pointerup", end);
-  CANVAS.addEventListener("pointercancel", end);
-  window.addEventListener("keydown", function (e) {
-    if (e.key === "ArrowLeft") THETA -= 0.1;
-    if (e.key === "ArrowRight") THETA += 0.1;
-  });
-  var VIEWS = { front: 0, side: -Math.PI / 2, back: Math.PI };   // side = sisi kiri karakter, sama seperti foto referensi
-  document.querySelectorAll("#ui button[data-view]").forEach(function (b) {
-    b.addEventListener("click", function () { THETA = VIEWS[b.dataset.view]; });
-  });
 
     // Goresan sirip ekor: 3 celah searah kedalaman (sumbu lokal z), dari pangkal (dekat badan, z lokal > 0)
   // keluar ke ujung. Kedua sisi daun digores (tanpa syarat y), karena sirip ekor ada di tengah badan.
@@ -477,9 +435,6 @@ function main() {
   });
 
   /*========================= DRAW =========================*/
-  GL.enable(GL.DEPTH_TEST);
-  GL.depthFunc(GL.LEQUAL);
-  GL.clearColor(0.867, 0.867, 0.867, 1.0);   // abu-abu terang, sama seperti latar foto referensi
   var STRIDE = 4 * 9;
 
   /*========================= STATE ANIMASI (Idle + 3 emote) =========================
@@ -493,26 +448,16 @@ function main() {
   var anim = { current: null, requested: null, weight: 0, time: 0 };
   function setAnim(name) {                       // name = "idle" | "happy" | "walk" | "circle" | null
     anim.requested = (name && anim.requested !== name) ? name : null;   // tekan lagi = stop
-    Object.keys(ANIMS).forEach(function (k) {
-      var b = document.getElementById(ANIMS[k].btn), on = anim.requested === k;
-      if (b) { b.textContent = on ? ANIMS[k].on : ANIMS[k].off; b.classList.toggle("active", on); }
-    });
   }
-  Object.keys(ANIMS).forEach(function (k) {
-    var b = document.getElementById(ANIMS[k].btn);
-    if (b) b.addEventListener("click", function () { setAnim(k); });
-  });
-  window.addEventListener("keydown", function (e) {
-    Object.keys(ANIMS).forEach(function (k) { if (e.key.toLowerCase() === ANIMS[k].key) setAnim(k); });
-  });
 
-  var lastTime = performance.now();
+  var lastT = null;
 
-  function draw(now) {
-    var dt = Math.min((now - lastTime) / 1000, 0.1);
-    lastTime = now;
+  // M = model matrix dunia (translasi * rotasi Y * skala) dari world.js, t = detik
+  function draw(M, t) {
+    var dt = lastT === null ? 0 : Math.min(Math.max(t - lastT, 0), 0.1);
+    lastT = t;
 
-        if (anim.current !== anim.requested) {          // ganti animasi / stop: fade-out dulu
+    if (anim.current !== anim.requested) {          // ganti animasi / stop: fade-out dulu
       anim.weight += (0 - anim.weight) * (1 - Math.exp(-dt * 9));
       if (anim.weight < 0.02) { anim.weight = 0; anim.current = anim.requested; anim.time = 0; }
     } else {                                        // animasi yang sama: fade-in (atau tetap 0 kalau null)
@@ -523,23 +468,22 @@ function main() {
     var deltas = (anim.current && anim.weight > 0) ? ANIMS[anim.current].evaluate(anim.time, anim.weight) : {};
     updateWorld(deltas);
 
-    GL.viewport(0, 0, CANVAS.width, CANVAS.height);
-    GL.clear(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT);
-
-    // rotasi turntable: hanya sumbu Y (vertikal)
-    var rootRot = LIBS.get_I4();
-    LIBS.rotateY(rootRot, THETA);
-
-    GL.uniformMatrix4fv(_Pmatrix, false, PROJMATRIX);
-    GL.uniformMatrix4fv(_Vmatrix, false, VIEWMATRIX);
+    // Context dipakai bersama: set ulang program & attribute milik Hangyodon tiap draw
+    GL.useProgram(PROG);
+    for (var a = 0; a < 8; a++) GL.disableVertexAttribArray(a);
+    GL.enableVertexAttribArray(_position);
+    GL.enableVertexAttribArray(_normal);
+    GL.enableVertexAttribArray(_color);
+    GL.uniformMatrix4fv(_Pmatrix, false, cam.P);
+    GL.uniformMatrix4fv(_Vmatrix, false, cam.V);
 
     ORDER.forEach(function (name) {
       var p = PARTS[name];
       var d = deltas[name];
       if (d ? d.hidden : p.hiddenDefault) return;           // kelopak: hanya tampil saat kedip
-      var M = mul(rootRot, p.world);
-      GL.uniformMatrix4fv(_Mmatrix, false, M);
-      GL.uniformMatrix3fv(_Nmatrix, false, normalMatrix(M));
+      var Mp = mul(M, p.world);                              // world karakter * hierarki bagian
+      GL.uniformMatrix4fv(_Mmatrix, false, Mp);
+      GL.uniformMatrix3fv(_Nmatrix, false, normalMatrix(Mp));
       GL.bindBuffer(GL.ARRAY_BUFFER, p.VBO);
       GL.vertexAttribPointer(_position, 3, GL.FLOAT, false, STRIDE, 0);
       GL.vertexAttribPointer(_normal, 3, GL.FLOAT, false, STRIDE, 12);
@@ -547,23 +491,14 @@ function main() {
       GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, p.EBO);
       GL.drawElements(GL.TRIANGLES, p.count, GL.UNSIGNED_SHORT, 0);
     });
-    requestAnimationFrame(draw);
   }
-  requestAnimationFrame(draw);
 
-  // API untuk digabung ke environment tim / debug
-  window.hangyodon = {
-        play: function (name) { if (anim.requested !== name) setAnim(name); },        // "idle" | "happy" | "walk" | "circle"
+  // Dipakai world.js: obj.draw(M, t) + kontrol animasi
+  return {
+    draw: draw,
+    animations: ["idle", "happy", "walk", "circle"],
+    play: function (name) { if (anim.requested !== name) setAnim(name); },   // "idle" | "happy" | "walk" | "circle"
     stop: function () { setAnim(null); },
-    playIdle: function () { this.play("idle"); },
-    stopIdle: function () { this.stop(); },
-    seek: function (t, name) {                                                    // lompat ke detik ke-t (debug/screenshot)
-      name = name || anim.requested || "idle";
-      if (anim.requested !== name) setAnim(name);
-      anim.current = name; anim.time = t; anim.weight = 1;
-    }
+    current: function () { return anim.requested; }
   };
-  window.__setTheta = function (t) { THETA = t; };   // dipakai untuk screenshot/debug
 }
-
-window.addEventListener("load", main);
