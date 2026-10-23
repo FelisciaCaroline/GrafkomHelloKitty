@@ -1,13 +1,10 @@
-// Kuromi sebagai "factory": window.createKuromi(GL, cam)
-// Canvas, kamera, input, dan loop ada di world.js. Environment digambar otomatis oleh environment.js.
-// Animasi (idle + cheer + walk) dihitung di sini memakai performance.now(), jadi world.js tidak perlu diubah.
-// API:
-//   var k = window.createKuromi(GL, cam);
-//   k.cheer();          // memicu animasi senang manual
-//   k.walk(true);       // mulai jalan (k.walk() = toggle, k.walk(false) = berhenti)
-//   k.walkPath(false);  // false = jalan di tempat (tanpa berkeliling lingkaran)
-(function () {
+// Kuromi + environment.
+// - Tengkorak diambil langsung dari skull.png (satu folder dengan index.html)
+// - Environment digambar otomatis oleh enviroment.js (tidak dipanggil dari sini)
 
+// ---------------------------------------------------------------
+// Global geometry generator helpers
+// ---------------------------------------------------------------
 function gridIndices(rows, cols) {
     var idx = [];
     for (var i = 0; i < rows - 1; i++) {
@@ -36,16 +33,16 @@ function makeSphere(r, lats, longs) {
 }
 
 function makeEyePatch(cx, cy, rx, ry, side, n, lift) {
-    var LID_A = 0.35;
-    var LID_S = 0.45;
+    var LID_A = 0.35;   // lid height at eye centre (lower = more squinted)
+    var LID_S = 0.45;   // lid slope (higher = more angry)
     var v = [];
     for (var i = 0; i <= n; i++) {
-        var w = i / n;
+        var w = i / n;                                   // 0 bottom -> 1 top
         for (var j = 0; j <= n; j++) {
-            var lx = -Math.cos(Math.PI * j / n);
+            var lx = -Math.cos(Math.PI * j / n);         // -1 inner corner ... +1 outer corner
             var e = Math.sqrt(Math.max(1 - lx * lx, 0));
             var yb = -e;
-            var yt = Math.max(Math.min(e, LID_A + LID_S * lx), yb);
+            var yt = Math.max(Math.min(e, LID_A + LID_S * lx), yb); // ellipse top cut by the slanted lid
             var ly = yb + (yt - yb) * w;
 
             var x = cx + side * lx * rx;
@@ -61,18 +58,21 @@ function makeEyePatch(cx, cy, rx, ry, side, n, lift) {
     return { vertices: v, indices: gridIndices(n + 1, n) };
 }
 
+// Creates a triangular point patch that hugs the head ellipsoid surface
 function makePeakPatch(cy, halfW, height, n) {
     var v = [];
     for (var i = 0; i <= n; i++) {
-        var t = i / n;
+        var t = i / n; // 0 at top, 1 at bottom tip
         var curWidth = halfW * (1 - t);
         var y = cy - t * height;
         for (var j = 0; j <= n; j++) {
             var u = j / n;
             var x = (u * 2 - 1) * curWidth;
 
+            // head ellipsoid: centre [0,1.6,0], radii [1.9,1.55,1.6]
             var qh = Math.max(1 - (x / 1.9) * (x / 1.9) - ((y - 1.6) / 1.55) * ((y - 1.6) / 1.55), 0);
             var zh = 1.6 * Math.sqrt(qh);
+            // face ellipsoid: centre [0,1.3,0.8], radii [1.5,1.0,0.9]
             var qf = Math.max(1 - (x / 1.5) * (x / 1.5) - (y - 1.3) * (y - 1.3), 0);
             var zf = 0.8 + 0.9 * Math.sqrt(qf);
 
@@ -131,8 +131,10 @@ function makeDiamond(rMid, hBot, hTop, seg) {
     return { vertices: v, indices: idx };
 }
 
+// Chunky Kuromi leg: rounded top, slight flare toward the bottom, rounded sole.
+// Unit-sized (y from -1 to 1, radius <= 1) so it can be scaled with uScale.
 function makeLeg(rows, seg) {
-    var f = function (t) {
+    var f = function (t) { // t: 0 = top, 1 = bottom
         var w = 0.82 + 0.18 * t;
         var k = 0.24, c = 1, q;
         if (t < k) { q = (k - t) / k; c = Math.sqrt(Math.max(0, 1 - q * q)); }
@@ -158,7 +160,8 @@ function makeLeg(rows, seg) {
     return { vertices: v, indices: gridIndices(rows + 1, seg) };
 }
 
-// pos(3) normal(3) uv(2) => stride 32 bytes
+// A textured patch that hugs the front of the hood (head ellipsoid centre [0,1.6,0], radii [1.9,1.55,1.6]).
+// Vertex layout: pos(3) normal(3) uv(2) => stride 32 bytes
 function makeSkullPatch(cy, halfW, halfH, n, lift) {
     var v = [];
     for (var i = 0; i <= n; i++) {
@@ -184,12 +187,14 @@ function sweepVertices(P, profile, steps, seg) {
         var l = Math.hypot(a[0], a[1], a[2]) || 1;
         return [a[0] / l, a[1] / l, a[2] / l];
     };
+
     var point = function (t) {
         var u = 1 - t;
         return [0, 1, 2].map(function (k) {
             return u * u * u * P[0][k] + 3 * u * u * t * P[1][k] + 3 * u * t * t * P[2][k] + t * t * t * P[3][k];
         });
     };
+
     var tangent = function (t) {
         var u = 1 - t;
         return norm([0, 1, 2].map(function (k) {
@@ -229,7 +234,6 @@ function sweepVertices(P, profile, steps, seg) {
     return v;
 }
 
-/*========================= MATRIX HELPERS (column-major) ========================= */
 function mul4(a, b) {
     var o = new Float32Array(16);
     for (var c = 0; c < 4; c++) {
@@ -242,14 +246,6 @@ function mul4(a, b) {
     return o;
 }
 
-function translateM(x, y, z) {
-    return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
-}
-
-function scaleM(x, y, z) {
-    return new Float32Array([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]);
-}
-
 function rotationMatrix(rx, ry, rz) {
     var cx = Math.cos(rx), sx = Math.sin(rx);
     var cy = Math.cos(ry), sy = Math.sin(ry);
@@ -260,66 +256,11 @@ function rotationMatrix(rx, ry, rz) {
     return mul4(RZ, mul4(RY, RX));
 }
 
-// putar "child" di sekitar titik pivot (px,py,pz), di dalam ruang parent
-function pivotRot(parent, px, py, pz, rx, ry, rz) {
-    return mul4(parent, mul4(translateM(px, py, pz), mul4(rotationMatrix(rx, ry, rz), translateM(-px, -py, -pz))));
-}
 
-// skala di sekitar y = py (squash & stretch dari telapak kaki)
-function pivotScale(parent, sx, sy, py) {
-    return mul4(parent, mul4(translateM(0, py, 0), mul4(scaleM(sx, sy, sx), translateM(0, -py, 0))));
-}
-
-// rotasi sebesar 'ang' di sekitar SUMBU SEMBARANG (ax,ay,az) - rumus Rodrigues
-function axisAngleM(ax, ay, az, ang) {
-    var l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
-    var c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
-    return new Float32Array([
-        t * ax * ax + c,      t * ax * ay + s * az, t * ax * az - s * ay, 0,
-        t * ax * ay - s * az, t * ay * ay + c,      t * ay * az + s * ax, 0,
-        t * ax * az + s * ay, t * ay * az - s * ax, t * az * az + c,      0,
-        0, 0, 0, 1
-    ]);
-}
-
-// rotasi sumbu sembarang + titik pivot sembarang
-function pivotAxis(parent, px, py, pz, ax, ay, az, ang) {
-    return mul4(parent, mul4(translateM(px, py, pz), mul4(axisAngleM(ax, ay, az, ang), translateM(-px, -py, -pz))));
-}
-
-/*========================= EASING HELPERS ========================= */
-function clamp01(x) { return Math.min(1, Math.max(0, x)); }
-function smooth(x) { x = clamp01(x); return x * x * (3 - 2 * x); }
-
-// Interpolasi keyframe [[t, nilai], ...] memakai spline Hermite (kecepatan halus, tidak berhenti di tiap key).
-// Di puncak/lembah/plateau kecepatan dibuat nol supaya tidak overshoot.
-function keys(t, k) {
-    var n = k.length;
-    if (t <= k[0][0]) return k[0][1];
-    if (t >= k[n - 1][0]) return k[n - 1][1];
-    var slope = function (i) {
-        if (i <= 0 || i >= n - 1) return 0;
-        var a = k[i][1] - k[i - 1][1], b = k[i + 1][1] - k[i][1];
-        if (a * b <= 0) return 0;
-        return (k[i + 1][1] - k[i - 1][1]) / (k[i + 1][0] - k[i - 1][0]);
-    };
-    for (var i = 1; i < n; i++) {
-        if (t < k[i][0]) {
-            var h = k[i][0] - k[i - 1][0];
-            var u = (t - k[i - 1][0]) / h;
-            var u2 = u * u, u3 = u2 * u;
-            return (2 * u3 - 3 * u2 + 1) * k[i - 1][1] + (u3 - 2 * u2 + u) * h * slope(i - 1)
-                 + (-2 * u3 + 3 * u2) * k[i][1] + (u3 - u2) * h * slope(i);
-        }
-    }
-    return k[n - 1][1];
-}
-
-function easeOutBack(x) {
-    var c1 = 1.70158, c3 = c1 + 1, y = x - 1;
-    return 1 + c3 * y * y * y + c1 * y * y;
-}
-
+// Hapus latar putih skull.png: flood-fill dari tepi gambar, jadi hanya putih yang
+// tersambung ke tepi yang dihapus (putih di dalam skull aman). Lalu bersihkan sisa
+// pinggiran keabu-abuan dan set warna piksel transparan jadi hitam (outline)
+// supaya tidak muncul halo putih saat tekstur diperhalus.
 function removeWhiteBackground(p, w, h) {
     var isBg = function (i) {
         return p[i + 3] < 10 || (p[i] > 200 && p[i + 1] > 200 && p[i + 2] > 200);
@@ -337,6 +278,7 @@ function removeWhiteBackground(p, w, h) {
         var n = stack.pop(), px = n % w, py = (n - px) / w;
         push(px + 1, py); push(px - 1, py); push(px, py + 1); push(px, py - 1);
     }
+    // pinggiran abu-abu/putih bekas anti-alias yang menempel ke area transparan (2 putaran)
     for (var pass = 0; pass < 2; pass++) {
         var add = [];
         for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
@@ -345,7 +287,7 @@ function removeWhiteBackground(p, w, h) {
             var near = (x > 0 && seen[m - 1]) || (x < w - 1 && seen[m + 1]) || (y > 0 && seen[m - w]) || (y < h - 1 && seen[m + w]);
             if (!near) continue;
             var i = m * 4, mn = Math.min(p[i], p[i + 1], p[i + 2]), mx = Math.max(p[i], p[i + 1], p[i + 2]);
-            if (mn > 140 && mx - mn < 45) add.push(m);
+            if (mn > 140 && mx - mn < 45) add.push(m);   // terang & hampir abu-abu (bukan pink)
         }
         for (k = 0; k < add.length; k++) seen[add[k]] = 1;
     }
@@ -357,9 +299,32 @@ function removeWhiteBackground(p, w, h) {
 
 function nextPOT(n) { var v = 1; while (v < n) v *= 2; return v; }
 
-window.createKuromi = function (GL, cam) {
+function main() {
+    /** @type {HTMLCanvasElement} */
+    var CANVAS = document.getElementById('mycanvas');
+    // resolusi canvas mengikuti layar retina/HiDPI supaya tidak buram
+    var fitCanvas = function () {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        CANVAS.width = Math.floor(window.innerWidth * dpr);
+        CANVAS.height = Math.floor(window.innerHeight * dpr);
+        if (CANVAS.style) {
+            CANVAS.style.width = window.innerWidth + "px";
+            CANVAS.style.height = window.innerHeight + "px";
+        }
+    };
+    fitCanvas();
 
-    /*========================= SHADERS ========================= */
+    /*===================== GET WEBGL CONTEXT ===================== */
+    /** @type {WebGLRenderingContext} */
+    var GL;
+    try {
+        GL = CANVAS.getContext("webgl", { antialias: true });
+    } catch (e) {
+        alert("WebGL context cannot be initialized");
+        return false;
+    }
+
+    /*========================= SHADERS (karakter) ========================= */
     var shader_vertex_source = `
         attribute vec3 position;
         attribute vec3 normal;
@@ -413,21 +378,27 @@ window.createKuromi = function (GL, cam) {
         GL.shaderSource(shader, source);
         GL.compileShader(shader);
         if (!GL.getShaderParameter(shader, GL.COMPILE_STATUS)) {
-            alert("KUROMI " + typeString + " SHADER: " + GL.getShaderInfoLog(shader));
+            alert("ERROR IN " + typeString + " SHADER: " + GL.getShaderInfoLog(shader));
             return false;
         }
         return shader;
     };
 
+    var shader_vertex = compile_shader(shader_vertex_source, GL.VERTEX_SHADER, "VERTEX");
+    var shader_fragment = compile_shader(shader_fragment_source, GL.FRAGMENT_SHADER, "FRAGMENT");
+
     var SHADER_PROGRAM = GL.createProgram();
-    GL.attachShader(SHADER_PROGRAM, compile_shader(shader_vertex_source, GL.VERTEX_SHADER, "VERTEX"));
-    GL.attachShader(SHADER_PROGRAM, compile_shader(shader_fragment_source, GL.FRAGMENT_SHADER, "FRAGMENT"));
+    GL.attachShader(SHADER_PROGRAM, shader_vertex);
+    GL.attachShader(SHADER_PROGRAM, shader_fragment);
     GL.linkProgram(SHADER_PROGRAM);
     GL.useProgram(SHADER_PROGRAM);
 
     var _position = GL.getAttribLocation(SHADER_PROGRAM, "position");
     var _normal = GL.getAttribLocation(SHADER_PROGRAM, "normal");
     var _uv = GL.getAttribLocation(SHADER_PROGRAM, "uv");
+    GL.enableVertexAttribArray(_position);
+    GL.enableVertexAttribArray(_normal);
+    GL.enableVertexAttribArray(_uv);
 
     var _Pmatrix = GL.getUniformLocation(SHADER_PROGRAM, "Pmatrix");
     var _Vmatrix = GL.getUniformLocation(SHADER_PROGRAM, "Vmatrix");
@@ -439,12 +410,18 @@ window.createKuromi = function (GL, cam) {
     var _uTex = GL.getUniformLocation(SHADER_PROGRAM, "uTex");
     var _uUseTex = GL.getUniformLocation(SHADER_PROGRAM, "uUseTex");
 
+    /*======================== ENVIRONMENT (opsional, otomatis) ======================== */
+    // enviroment.js (kalau dimuat di index.html) memasang dirinya sendiri dan menggambar sendiri.
+    // Di sini cuma dipakai untuk tinggi tanah; kalau file itu tidak ada, tanah dianggap datar.
+    var ENV = window.ENV || { groundY: -2.1, groundHeight: function () { return -2.1; } };
+
     /*======================== GEOMETRY & BUFFERS ======================== */
-    var makeMesh = function (data) {
+    var makeMesh = function (data, usage) {
+        if (!usage) usage = GL.STATIC_DRAW;
         var vb = GL.createBuffer();
         var ib = GL.createBuffer();
         GL.bindBuffer(GL.ARRAY_BUFFER, vb);
-        GL.bufferData(GL.ARRAY_BUFFER, new Float32Array(data.vertices), GL.STATIC_DRAW);
+        GL.bufferData(GL.ARRAY_BUFFER, new Float32Array(data.vertices), usage);
         GL.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, ib);
         GL.bufferData(GL.ELEMENT_ARRAY_BUFFER, new Uint16Array(data.indices), GL.STATIC_DRAW);
         return { vb: vb, ib: ib, count: data.indices.length, stride: data.stride || 24, textured: !!data.textured };
@@ -453,16 +430,17 @@ window.createKuromi = function (GL, cam) {
     var sphere = makeMesh(makeSphere(1, 30, 30));
     var cone = makeMesh(makeCone(1, 2, 30));
     var diamond = makeMesh(makeDiamond(1, 0.22, 0.78, 8));
-    var star = makeMesh(makeDiamond(1, 1, 1, 4));   // dipakai untuk kilau bintang
     var leg = makeMesh(makeLeg(32, 28));
 
-    var SKULL_CY = 2.15, SKULL_HH = 0.8;
-    var skullMesh = makeMesh(makeSkullPatch(SKULL_CY, SKULL_HH * 1.0, SKULL_HH, 12, 0.06));
-    var SKULL_TINT = [1.0, 1.0, 1.0];
+    // Skull sits on the hood, just above the pointed black "widow's peak"
+    var SKULL_CY = 2.15, SKULL_HH = 0.8; // skull patch centre y, half-height (width disesuaikan saat gambar skull.png termuat)
+    var skullMesh = makeMesh(makeSkullPatch(SKULL_CY, SKULL_HH * 1.0, SKULL_HH, 12, 0.06)); // lebar diganti otomatis sesuai rasio skull.png saat gambar termuat
+    var SKULL_TINT = [1.0, 1.0, 1.0]; // multiply the texture (e.g. [1.0, 0.85, 0.95] for a pinker skull)
     var peakMesh = makeMesh(makePeakPatch(2, 1.3, 0.65, 12));
-    var eyeL = makeMesh(makeEyePatch(-0.74, 1.17, 0.18, 0.22, -1, 16, 0.02));
-    var eyeR = makeMesh(makeEyePatch(0.74, 1.17, 0.21, 0.25, 1, 16, 0.02));
+    var eyeL = makeMesh(makeEyePatch(-0.74, 1.17, 0.18, 0.22, -1, 16, 0.02)); // viewer-left (a bit smaller)
+    var eyeR = makeMesh(makeEyePatch(0.74, 1.17, 0.21, 0.25, 1, 16, 0.02)); // viewer-right (a bit larger)
 
+    // Static tail
     var TAIL_STEPS = 36, TAIL_SEG = 12;
     var tailProfile = function (t) { return [0.19 * (1 - 0.35 * t), 0.15 * (1 - 0.35 * t)]; };
     var tailPathStatic = [
@@ -476,6 +454,7 @@ window.createKuromi = function (GL, cam) {
         indices: gridIndices(TAIL_STEPS + 1, TAIL_SEG)
     });
 
+    // Smile: a thin tube following a curve resting on the face surface
     var smileProfile = function () { return [0.03, 0.03]; };
     var smile = makeMesh({
         vertices: sweepVertices([
@@ -485,20 +464,6 @@ window.createKuromi = function (GL, cam) {
             [0.46, 0.88, 1.60]
         ], smileProfile, 20, 8),
         indices: gridIndices(21, 8)
-    });
-
-    // Busur mata tertutup "^" (dipakai saat berkedip & senang). Bentuk unit, diskalakan saat draw.
-    var arcMesh = makeMesh({
-        vertices: sweepVertices([
-            [-1, -0.35, 0],
-            [-0.55, 0.75, 0],
-            [0.55, 0.75, 0],
-            [1, -0.35, 0]
-        ], function (t) {
-            var r = 0.14 * (0.35 + 0.65 * Math.sin(Math.PI * t));
-            return [r, r];
-        }, 24, 8),
-        indices: gridIndices(25, 8)
     });
 
     /*========================= SKULL TEXTURE ========================= */
@@ -511,13 +476,14 @@ window.createKuromi = function (GL, cam) {
     GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_S, GL.CLAMP_TO_EDGE);
     GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE);
 
-    // path relatif terhadap index.html di root project
-    var SKULL_FILE = "kuromi/skull.png";
+    var SKULL_FILE = "skull.png"; // taruh skull.png satu folder dengan index.html
+    var isPOT = function (n) { return (n & (n - 1)) === 0; };
 
     var skullImg = new Image();
     skullImg.onload = function () {
         var w = skullImg.width, h = skullImg.height;
 
+        // 1) gambar ke canvas 2D, hapus latar putih
         var c1 = document.createElement("canvas");
         c1.width = w; c1.height = h;
         var x1 = c1.getContext("2d");
@@ -526,14 +492,16 @@ window.createKuromi = function (GL, cam) {
         removeWhiteBackground(id.data, w, h);
         x1.putImageData(id, 0, 0);
 
+        // 2) skala ke ukuran pangkat dua (min 256) tanpa memperhalus, jadi pixel-art tetap tajam
         var tw = Math.min(1024, Math.max(256, nextPOT(w)));
         var th = Math.min(1024, Math.max(256, nextPOT(h)));
         var c2 = document.createElement("canvas");
         c2.width = tw; c2.height = th;
         var x2 = c2.getContext("2d");
-        x2.imageSmoothingEnabled = (w > tw || h > th);
+        x2.imageSmoothingEnabled = (w > tw || h > th); // kecilkan: halus, besarkan: tajam
         x2.drawImage(c1, 0, 0, tw, th);
 
+        // 3) upload ke GPU dengan mipmap + anisotropic filtering
         GL.bindTexture(GL.TEXTURE_2D, skullTex);
         GL.pixelStorei(GL.UNPACK_FLIP_Y_WEBGL, true);
         GL.texImage2D(GL.TEXTURE_2D, 0, GL.RGBA, GL.RGBA, GL.UNSIGNED_BYTE, c2);
@@ -546,13 +514,15 @@ window.createKuromi = function (GL, cam) {
                 Math.min(8, GL.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
         }
 
+        // sesuaikan lebar patch dengan rasio asli skull.png
         var aspect = w / h;
         GL.deleteBuffer(skullMesh.vb);
         GL.deleteBuffer(skullMesh.ib);
         skullMesh = makeMesh(makeSkullPatch(SKULL_CY, SKULL_HH * aspect, SKULL_HH, 12, 0.06));
     };
     skullImg.onerror = function () {
-        console.warn("kuromi/skull.png tidak bisa dimuat. Buka lewat Live Server (bukan file://) dan cek path-nya.");
+        console.warn("skull.png tidak bisa dimuat. Pastikan file ada di folder yang sama dengan index.html " +
+            "dan halaman dibuka lewat Live Server (bukan file://).");
     };
     skullImg.src = SKULL_FILE;
 
@@ -571,58 +541,142 @@ window.createKuromi = function (GL, cam) {
         GL.drawElements(GL.TRIANGLES, mesh.count, GL.UNSIGNED_SHORT, 0);
     };
 
-    var setM = function (m) { GL.uniformMatrix4fv(_Mmatrix, false, m); };
+    /*======================== KAMERA ORBIT (360 derajat) ======================== */
+    // far plane 600 supaya langit & bukit jauh tidak terpotong
+    var PROJMATRIX = LIBS.get_projection(40, CANVAS.width / CANVAS.height, 1, 600);
+    var MOVEMATRIX = LIBS.get_I4();
+    var VIEWMATRIX = LIBS.get_I4();
+
+    var camYaw = 0, camPitch = 0.08, camDist = 18;       // posisi kamera mengitari Kuromi
+    var CAM_MIN_D = 6, CAM_MAX_D = 45;                   // batas zoom
+    var PITCH_MIN = -0.08, PITCH_MAX = 1.2;              // batas naik/turun kamera
+    var dYaw = 0, dPitch = 0, FRICTION = 0.08;           // inersia putaran
+    var drag = false, x_prev, y_prev;
+
+    var charX = 0, charZ = 0, charYaw = 0, charY = 0;
+    var SPEED = 0.12, WORLD_R = 50;
+    var keys = {};
+
+    var clampPitch = function () { camPitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, camPitch)); };
+
+    // lookAt: kamera di 'eye' menatap 'tgt'
+    var buildView = function (out, ex, ey, ez, tx, ty, tz) {
+        var zx = ex - tx, zy = ey - ty, zz = ez - tz;
+        var l = Math.hypot(zx, zy, zz); zx /= l; zy /= l; zz /= l;
+        var xx = zz, xy = 0, xz = -zx;                    // up(0,1,0) x z
+        l = Math.hypot(xx, xz) || 1; xx /= l; xz /= l;
+        var yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+        out[0] = xx; out[1] = yx; out[2] = zx; out[3] = 0;
+        out[4] = xy; out[5] = yy; out[6] = zy; out[7] = 0;
+        out[8] = xz; out[9] = yz; out[10] = zz; out[11] = 0;
+        out[12] = -(xx * ex + xy * ey + xz * ez);
+        out[13] = -(yx * ex + yy * ey + yz * ez);
+        out[14] = -(zx * ex + zy * ey + zz * ez);
+        out[15] = 1;
+    };
+
+    var updateCamera = function () {
+        var tx = charX, ty = charY + 1.5, tz = charZ;
+        var cp = Math.cos(camPitch);
+        var ex = tx + camDist * Math.sin(camYaw) * cp;
+        var ey = ty + camDist * Math.sin(camPitch);
+        var ez = tz + camDist * Math.cos(camYaw) * cp;
+        var gy = ENV.groundHeight(ex, ez) + 0.8;          // kamera tidak boleh masuk tanah
+        if (ey < gy) ey = gy;
+        buildView(VIEWMATRIX, ex, ey, ez, tx, ty, tz);
+    };
+
+    /*======================== MOUSE, TOUCH & KEYBOARD ======================== */
+    var orbit = function (dx, dy) {
+        dYaw = -dx * 2 * Math.PI / (CANVAS.clientWidth || window.innerWidth);
+        dPitch = dy * Math.PI / (CANVAS.clientHeight || window.innerHeight);
+        camYaw += dYaw;
+        camPitch += dPitch;
+        clampPitch();
+    };
+    var zoom = function (f) {
+        camDist = Math.max(CAM_MIN_D, Math.min(CAM_MAX_D, camDist * f));
+    };
+
+    CANVAS.addEventListener("mousedown", function (e) {
+        drag = true; x_prev = e.pageX; y_prev = e.pageY;
+        e.preventDefault();
+    }, false);
+    window.addEventListener("mouseup", function () { drag = false; }, false);
+    window.addEventListener("mousemove", function (e) {
+        if (!drag) return;
+        orbit(e.pageX - x_prev, e.pageY - y_prev);
+        x_prev = e.pageX; y_prev = e.pageY;
+    }, false);
+    CANVAS.addEventListener("wheel", function (e) {
+        zoom(e.deltaY > 0 ? 1.1 : 1 / 1.1);
+        e.preventDefault();
+    }, { passive: false });
+
+    // sentuh: 1 jari = orbit, 2 jari = cubit untuk zoom
+    var pinchD = 0;
+    var touchDist = function (t) { return Math.hypot(t[0].pageX - t[1].pageX, t[0].pageY - t[1].pageY); };
+    CANVAS.addEventListener("touchstart", function (e) {
+        if (e.touches.length === 1) { drag = true; x_prev = e.touches[0].pageX; y_prev = e.touches[0].pageY; }
+        else if (e.touches.length === 2) { drag = false; pinchD = touchDist(e.touches); }
+        e.preventDefault();
+    }, { passive: false });
+    CANVAS.addEventListener("touchmove", function (e) {
+        if (e.touches.length === 1 && drag) {
+            orbit(e.touches[0].pageX - x_prev, e.touches[0].pageY - y_prev);
+            x_prev = e.touches[0].pageX; y_prev = e.touches[0].pageY;
+        } else if (e.touches.length === 2) {
+            var d = touchDist(e.touches);
+            if (pinchD > 0) zoom(pinchD / d);
+            pinchD = d;
+        }
+        e.preventDefault();
+    }, { passive: false });
+    CANVAS.addEventListener("touchend", function () { drag = false; pinchD = 0; }, false);
+
+    window.addEventListener("keydown", function (e) {
+        var k = e.key.toLowerCase();
+        keys[k] = true;
+        if (k.indexOf("arrow") === 0) e.preventDefault();
+    }, false);
+    window.addEventListener("keyup", function (e) { keys[e.key.toLowerCase()] = false; }, false);
+
+    window.addEventListener("resize", function () {
+        fitCanvas();
+        PROJMATRIX = LIBS.get_projection(40, CANVAS.width / CANVAS.height, 1, 600);
+    }, false);
 
     /*======================== CHARACTER DRAWING HELPERS ======================== */
     var BLACK = [0.12, 0.12, 0.16];
     var WHITE = [0.97, 0.97, 0.97];
     var PINK = [0.98, 0.62, 0.78];
-    var BLUSH = [1.0, 0.66, 0.78];
-    var MOUTH = [0.46, 0.10, 0.22];
-    var STAR_Y = [1.0, 0.95, 0.55];
-    var STAR_O = [1.0, 0.62, 0.42];
-    var HEART = [0.95, 0.25, 0.42];
-    var TEAR = [0.55, 0.82, 1.0];
 
-    var FEET_Y = -2.1;          // titik tumpu squash & stretch
-    var NECK = [0, 0.35, 0];    // pivot kepala
-
+    // Z of the white face ellipsoid surface (centre [0,1.3,0.8], radii [1.5,1.0,0.9])
     var faceZ = function (x, y) {
         var q = 1 - (x / 1.5) * (x / 1.5) - (y - 1.3) * (y - 1.3);
         return 0.8 + 0.9 * Math.sqrt(Math.max(q, 0));
     };
 
-    // delta = lean telinga (rad). Positif = kedua telinga condong ke +x (kanan).
-    var drawEar = function (side, delta, flare) {
-        var a = 0.6 - side * delta + flare;
+    var drawEar = function (side) {
+        var a = 0.6;
         var H = 2;
         var base = [side * 1, 2.7, -0.1];
-        var sinA = Math.sin(a);
-        var cosA = Math.cos(a);
+        var sinA = 0.564642;
+        var cosA = 0.825335;
 
         draw(diamond, base, [0.95, H, 1], BLACK, [0, 0, -side * a]);
         draw(sphere, [base[0] + side * sinA * (H - 0.05), base[1] + cosA * (H - 0.05), base[2]], [0.26, 0.26, 0.24], BLACK);
     };
 
-    // o: 1 = terbuka, 0 = tertutup. k: kelengkungan busur (0.4 kedip, 1 senang)
-    var drawEye = function (mesh, cx, cy, rx, ry, side, o, k) {
-        if (o > 0.08) {
-            draw(mesh, [0, cy * (1 - o), 0], [1, o, 1], BLACK);
-            var lash = clamp01((o - 0.45) / 0.55);
-            if (lash > 0.03) {
-                var lx = cx + side * rx * 1.0, ly = cy + ry * 0.62 * o;
-                draw(sphere, [lx, ly, faceZ(lx, ly) + 0.02], [0.12 * lash, 0.024 * lash, 0.03], BLACK, [0, 0, side * 0.45]);
-                var lx2 = cx + side * rx * 1.3, ly2 = cy + ry * 0.10 * o;
-                draw(sphere, [lx2, ly2, faceZ(lx2, ly2) + 0.02], [0.11 * lash, 0.024 * lash, 0.03], BLACK, [0, 0, side * 0.15]);
-            }
-        }
-        var a = smooth((0.4 - o) / 0.4);
-        if (a > 0.02) {
-            draw(arcMesh,
-                [cx, cy - 0.02, faceZ(cx, cy) + 0.05],
-                [rx * 1.35 * a, ry * 1.2 * k * a, rx * 1.35],
-                BLACK, [0, side * 0.33, 0]);
-        }
+    // Asymmetric, slanted "mean" eyes with lash flicks on the outer corner
+    // Eye patch + two lash strokes at the outer upper corner
+    var drawEye = function (mesh, cx, cy, rx, ry, side) {
+        draw(mesh, [0, 0, 0], [1, 1, 1], BLACK);
+
+        var lx = cx + side * rx * 1.0, ly = cy + ry * 0.62;
+        draw(sphere, [lx, ly, faceZ(lx, ly) + 0.02], [0.12, 0.024, 0.03], BLACK, [0, 0, side * 0.45]);
+        var lx2 = cx + side * rx * 1.3, ly2 = cy + ry * 0.10;
+        draw(sphere, [lx2, ly2, faceZ(lx2, ly2) + 0.02], [0.11, 0.024, 0.03], BLACK, [0, 0, side * 0.15]);
     };
 
     var drawCollar = function () {
@@ -648,334 +702,100 @@ window.createKuromi = function (GL, cam) {
         draw(cone, [1.8, 0.2, -1.0], [0.32, 0.45, 0.14], BLACK, [0, 0, -0.49]);
     };
 
-    // kilau 4 sudut: dua belah ketupat tipis bersilang. fat > 1 = lebih gemuk (kilau oranye)
-    var drawStar = function (x, y, z, sz, col, spin, fat) {
-        fat = fat || 1;
-        var a = 0.55 * sz, w = 0.11 * sz * fat;
-        for (var i = 0; i < 2; i++) {
-            var th = spin + i * Math.PI / 2;
-            draw(star, [x + a * Math.sin(th), y - a * Math.cos(th), z], [w, a, w], col, [0, 0, th]);
+    /*========================= DRAWING ========================= */
+    GL.enable(GL.DEPTH_TEST);
+    GL.depthFunc(GL.LEQUAL);
+    GL.clearColor(0.80, 0.93, 1.0, 1.0); // warna horizon langit
+    GL.clearDepth(1.0);
+
+    var animate = function () {
+        GL.viewport(0, 0, CANVAS.width, CANVAS.height);
+        GL.clear(GL.COLOR_BUFFER_BIT | GL.DEPTH_BUFFER_BIT);
+
+        // --- gerak Kuromi (WASD / panah) relatif terhadap arah kamera ---
+        var fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);   // maju
+        var rx = Math.cos(camYaw), rz = -Math.sin(camYaw);    // kanan
+        var mx = 0, mz = 0;
+        if (keys['w'] || keys['arrowup']) { mx += fx; mz += fz; }
+        if (keys['s'] || keys['arrowdown']) { mx -= fx; mz -= fz; }
+        if (keys['d'] || keys['arrowright']) { mx += rx; mz += rz; }
+        if (keys['a'] || keys['arrowleft']) { mx -= rx; mz -= rz; }
+        var ml = Math.hypot(mx, mz);
+        if (ml > 0) {
+            mx /= ml; mz /= ml;
+            charX += mx * SPEED; charZ += mz * SPEED;
+            var cr = Math.hypot(charX, charZ);
+            if (cr > WORLD_R) { charX *= WORLD_R / cr; charZ *= WORLD_R / cr; }
+            var diff = Math.atan2(mx, mz) - charYaw;                // hadapkan ke arah jalan
+            diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+            charYaw += diff * 0.2;
         }
-    };
+        charY = ENV.groundHeight(charX, charZ) - ENV.groundY;       // kaki selalu menapak tanah
 
-    var drawHeart = function (x, y, z, s, col) {
-        draw(sphere, [x - 0.42 * s, y + 0.28 * s, z], [0.52 * s, 0.52 * s, 0.30 * s], col);
-        draw(sphere, [x + 0.42 * s, y + 0.28 * s, z], [0.52 * s, 0.52 * s, 0.30 * s], col);
-        draw(cone, [x, y + 0.25 * s, z], [0.98 * s, 0.62 * s, 0.30 * s], col, [0, 0, Math.PI]);
-    };
-
-    /*========================= ANIMATION STATE ========================= */
-    // Timeline disalin dari video referensi (30 fps, 8.16 dtk), c = detik sejak cheer mulai (= 6.1 dtk di video):
-    //  0.0 - 6.1 dtk : idle. Kepala goyang kiri-kanan (siklus ~4.1 dtk), satu kedip datar di 0.17 dtk
-    //  c 0.0 - 0.7   : membungkuk pelan, kepala turun & menunduk, telinga mengembang, tangan melebar
-    //  c 0.7 - 0.9   : pop naik cepat (sedikit overshoot), mulut terbuka, tangan merapat ke dada
-    //  c 0.95        : mata ^ ^
-    //  c 1.1 / 1.4 / 1.55 / 1.75 : kilau kecil, kilau putih besar, kilau oranye, hati
-    var IDLE_LEN = 6.1, CHEER_LEN = 4.4, HAPPY_END = 3.4;
-
-    // goyang kepala (-1..1) per fase siklus 4.1 dtk: lembah (tahan) -> naik cepat ~1.1 dtk -> puncak (tahan) -> turun pelan
-    var SWAY_KEYS = [[0, -1], [0.03, -1], [0.27, 1], [0.34, 1], [1, -1]];
-    var SWAY_PERIOD = 4.1, SWAY_OFFSET = 0.5;
-
-    // kurva cheer (ukur dari video): squash badan, menunduk kepala (rad), lebar tangan ke samping
-    var SQ_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.35], [0.5, 0.6], [0.6, 0.65], [0.7, 0.55], [0.8, 0.0], [0.9, -0.35], [1.1, -0.2], [1.5, -0.1], [3.2, -0.06], [4.2, 0]];
-    var PITCH_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.2], [0.5, 0.36], [0.6, 0.4], [0.7, 0.35], [0.8, 0.05], [0.9, -0.1], [1.1, -0.06], [1.5, -0.05], [3.2, -0.03], [4.2, 0]];
-    var ARMOUT_KEYS = [[0, 0], [0.15, 0.15], [0.35, 0.6], [0.55, 1.0], [0.68, 1.0], [0.8, 0.2], [0.9, 0]];
-
-    // dekorasi muncul berurutan seperti di video (posisi dalam ruang model, di depan telinga)
-    var DECOR = [
-        { on: 1.10, x: 2.45, y: 1.35, z: 1.8, size: 0.30, type: 'star', col: STAR_Y, k: 0.0 },
-        { on: 1.35, x: 2.75, y: 0.55, z: 1.8, size: 0.22, type: 'star', col: STAR_Y, k: 2.1 },
-        { on: 1.40, x: -0.45, y: 4.95, z: 2.0, size: 0.95, type: 'star', col: [1.0, 1.0, 0.92], k: 4.0 },
-        { on: 1.55, x: 0.55, y: 4.60, z: 2.0, size: 0.55, type: 'star', col: STAR_O, fat: 1.9, k: 1.2 },
-        { on: 1.75, x: 1.50, y: 4.60, z: 2.0, size: 0.46, type: 'heart', col: HEART, k: 3.1 }
-    ];
-
-    // parameter jalan
-    var WALK_R = 4.0, WALK_SPEED = 1.6;   // radius lingkaran & kecepatan (unit/detik)
-
-    var t0 = performance.now() / 1000;
-    var A = {
-        last: null, cycStart: t0,
-        cheering: false, cheerStart: 0,
-        breath: 0, armPh: 0, tailPh: 0, bobPh: 0,
-        happy: 0, eyeHappy: 0, earRoll: 0,
-        walking: false, followPath: true, walkAmt: 0, walkPh: 0, pathAng: 0,
-        laughing: false, laugh: 0, laughPh: 0
-    };
-
-    var triggerCheer = function () {
-        if (A.cheering) return;
-        A.cheering = true;
-        A.cheerStart = performance.now() / 1000;
-    };
-
-    var update = function (now) {
-        var dt = A.last === null ? 0.016 : Math.min(0.05, Math.max(0.0005, now - A.last));
-        A.last = now;
-        var damp = function (cur, target, lambda) { return cur + (target - cur) * (1 - Math.exp(-lambda * dt)); };
-
-        /* ---- saat jalan, jadwal idle/cheer otomatis ditahan ---- */
-        var finishing = A.followPath && A.pathAng > 0;   // setelah berhenti, selesaikan putaran sampai kembali ke titik awal
-        if ((A.walking || finishing || A.laughing) && !A.cheering) A.cycStart = now;
-
-        /* ---- jadwal: idle -> cheer -> idle ---- */
-        if (!A.cheering && now - A.cycStart >= IDLE_LEN) { A.cheering = true; A.cheerStart = now; }
-        var c = A.cheering ? now - A.cheerStart : -1;
-        if (A.cheering && c >= CHEER_LEN) { A.cheering = false; A.cycStart = now; c = -1; }
-        var ti = now - A.cycStart;
-
-        /* ---- envelope senang ---- */
-        var happyOn = (c > 0.78 && c < HAPPY_END);
-        A.happy = damp(A.happy, happyOn ? 1 : 0, happyOn ? 9 : 3.2);
-        /* ---- ketawa ---- */
-        A.laugh = damp(A.laugh, (A.laughing && !A.cheering) ? 1 : 0, 7);
-        var lf = A.laugh;                               // 0 = tenang, 1 = ketawa penuh
-        A.laughPh += dt * 2 * Math.PI * 4.5;            // 4.5 "ha" per detik (ubah 4.5 untuk kecepatan ketawa)
-        var eyeOn = (c > 0.95 && c < HAPPY_END) || lf > 0.3;
-        A.eyeHappy = damp(A.eyeHappy, eyeOn ? 1 : 0, eyeOn ? 22 : 8);
-        var h = A.happy;
-
-        /* ---- jalan ---- */
-        var wOn = (A.walking || finishing) && !A.cheering && !A.laughing;
-        A.walkAmt = damp(A.walkAmt, wOn ? 1 : 0, 6);
-        var w = A.walkAmt;
-        A.walkPh += dt * 2 * Math.PI * 1.1 * w;          // 1.1 siklus langkah / detik
-        if (A.followPath && wOn) {
-            A.pathAng += dt * w * WALK_SPEED / WALK_R;
-            if (A.pathAng >= 2 * Math.PI) {
-                A.pathAng -= 2 * Math.PI;
-                if (!A.walking) A.pathAng = 0;           // sudah berhenti: tepat kembali ke posisi awal
-            }
+        // --- inersia kamera ---
+        if (!drag) {
+            dYaw *= (1 - FRICTION);
+            dPitch *= (1 - FRICTION);
+            camYaw += dYaw;
+            camPitch += dPitch;
+            clampPitch();
         }
-        var wStep = Math.sin(A.walkPh), wCos = Math.cos(A.walkPh);
+        updateCamera();
 
-        /* ---- fase kontinu ---- */
-        A.breath += dt * 2 * Math.PI / 3.4;
-        A.armPh += dt * 2 * Math.PI * (0.55 + 0.9 * h);
-        A.tailPh += dt * 2 * Math.PI * (0.70 + 1.2 * h + 0.8 * w + 1.5 * A.laugh);
-        A.bobPh += dt * 1.0;
+        // --- Kuromi ---
+        LIBS.set_I4(MOVEMATRIX);
+        MOVEMATRIX[12] = charX;
+        MOVEMATRIX[13] = charY;
+        MOVEMATRIX[14] = charZ;
+        LIBS.rotateY(MOVEMATRIX, charYaw);
 
-        var br = Math.sin(A.breath);
-
-        /* ---- goyang idle ---- */
-        var ia = A.cheering ? 1 - smooth(c / 0.9) : smooth(ti / 1.2);
-        var ph = (((ti - SWAY_OFFSET) / SWAY_PERIOD) % 1 + 1) % 1;
-        var sway = keys(ph, SWAY_KEYS) * ia;
-
-        /* ---- kurva cheer ---- */
-        var sq = 0, pk = 0, ao = 0;
-        if (c >= 0) { sq = keys(c, SQ_KEYS); pk = keys(c, PITCH_KEYS); ao = keys(c, ARMOUT_KEYS); }
-
-        var bob = Math.sin(2 * Math.PI * A.bobPh);
-        var S = {
-            c: c, happy: h, sq: sq, ao: ao,
-            walk: w, step: wStep, stepCos: wCos, pathAng: A.pathAng,
-            waddle: w * 0.10 * wStep,
-            hop: h * 0.025 * (1 + bob) + w * 0.07 * (0.5 + 0.5 * Math.cos(2 * A.walkPh)),
-            jump: 0,
-            sy: 1 + 0.012 * br - 0.17 * sq + w * 0.02 * Math.cos(2 * A.walkPh),
-            sxz: 1 - 0.006 * br + 0.10 * sq
-        };
-
-        /* ---- kepala ---- */
-        S.roll = -0.06 * sway + h * 0.07 * Math.sin(A.bobPh * Math.PI + 0.7) - w * 0.05 * wStep;
-        S.yaw = 0.10 * sway + h * 0.05 * Math.sin(A.bobPh * Math.PI * 0.7);
-        S.pitch = 0.025 * br + pk - 0.04 * h + w * 0.08;      // condong ke depan
-        S.headY = 0.03 * Math.sin(A.breath - 0.6) + 0.065 * sway - 0.05 * sq + h * 0.04 * bob - w * 0.03 * Math.cos(2 * A.walkPh);
-
-        /* ---- ketawa: tiap "ha" badan memantul, kepala mendongak & bergoyang, badan condong ke belakang ---- */
-        var lph = A.laughPh, ha = Math.sin(lph), hh = 0.5 + 0.5 * ha;
-        S.laugh = lf; S.ha = ha; S.hh = hh;
-        S.hop   += lf * 0.07 * hh;                           // translasi: memantul tiap "ha"
-        S.sy    += lf * 0.045 * Math.sin(lph + 1.6);         // scaling: squash & stretch
-        S.sxz   -= lf * 0.025 * Math.sin(lph + 1.6);
-        S.pitch += lf * (-0.28 + 0.10 * ha);                 // rotasi: kepala mendongak ke belakang
-        S.roll  += lf * 0.10 * Math.sin(lph * 0.5);          // rotasi: kepala goyang kiri-kanan
-        S.yaw   += lf * 0.05 * Math.sin(lph * 0.5 + 1.0);
-        S.headY += lf * 0.05 * hh;
-        S.lean   = lf * (-0.10 + 0.07 * Math.sin(lph - 0.8)); // arbitrary rotate: badan condong ke belakang (sumbu miring)
-
-        // telinga: tertinggal dari gerak kepala + mengembang saat menunduk
-        A.earRoll = damp(A.earRoll, S.roll, 7);
-        S.earDelta = (A.earRoll - S.roll) * 2.4 + 0.05 * Math.sin(A.breath * 1.7) + 0.06 * h * Math.sin(now * 14);
-        S.earFlare = 0.06 * sq + 0.75 * Math.max(pk, 0);
-
-        /* ---- kedip: sekali per siklus idle, garis datar ---- */
-        var bp = (ti - 0.16) / 0.15;
-        var blinkO = (!A.cheering && bp > 0 && bp < 1) ? 1 - clamp01(1.7 * Math.sin(Math.PI * bp)) : 1;
-        S.eyeO = Math.min(blinkO, 1 - A.eyeHappy);
-        S.eyeK = 0.15 + 0.85 * A.eyeHappy;
-
-        /* ---- mulut & pipi ---- */
-        S.mouth = h * (0.95 + 0.05 * Math.sin(now * 8));
-        S.blush = clamp01(h * 1.2);
-        if (lf > 0.01) {
-            S.mouth = Math.max(S.mouth, lf * (0.85 + 0.55 * hh));   // mulut terbuka lebar, membesar tiap "ha"
-            S.blush = Math.max(S.blush, lf);
-        }
-        return S;
-    };
-
-    /*========================= RENDER (dipanggil world.js tiap frame) ========================= */
-    // M = model matrix (posisi + arah hadap + skala), disusun oleh world.js
-    var render = function (M) {
-        var now = performance.now() / 1000;
-        var S = update(now);
-        var h = S.happy;
-
-        // translasi + rotasi hadap: berjalan mengelilingi lingkaran, menghadap arah gerak
-        // (lingkaran melewati posisi awal; pathAng = 0 berarti persis di posisi & arah hadap semula)
-        if (A.followPath && S.pathAng !== 0) {
-            M = pivotRot(M, WALK_R, 0, 0, 0, S.pathAng, 0);
-        }
-
-        GL.useProgram(SHADER_PROGRAM);
-        for (var a = 0; a < 8; a++) GL.disableVertexAttribArray(a);
-        GL.enableVertexAttribArray(_position);
-        GL.enableVertexAttribArray(_normal);
-        GL.enableVertexAttribArray(_uv);
-
-        // Pmatrix & Vmatrix harus diset SEBELUM draw pertama: environment.js membacanya dari sini
-        GL.uniformMatrix4fv(_Pmatrix, false, cam.P);
-        GL.uniformMatrix4fv(_Vmatrix, false, cam.V);
+        GL.uniformMatrix4fv(_Pmatrix, false, PROJMATRIX);
+        GL.uniformMatrix4fv(_Vmatrix, false, VIEWMATRIX);
+        GL.uniformMatrix4fv(_Mmatrix, false, MOVEMATRIX);
 
         GL.activeTexture(GL.TEXTURE0);
         GL.bindTexture(GL.TEXTURE_2D, skullTex);
         GL.uniform1i(_uTex, 0);
 
-        // ---- matriks root: translasi hop, goyang pinggul (sumbu sembarang), squash/stretch dari telapak kaki ----
-        var root0 = mul4(M, translateM(0, S.hop + S.jump, 0));
-        root0 = pivotAxis(root0, 0, FEET_Y, 0, 0.15, 1, 0.35, S.waddle);   // arbitrary rotate
-        root0 = pivotAxis(root0, 0, -1.2, 0, 1, 0.15, 0.3, S.lean);        // arbitrary rotate: condong saat ketawa
-        var root = pivotScale(root0, S.sxz, S.sy, FEET_Y);
-
-        /* ===== BADAN ===== */
-        setM(root);
-        draw(sphere, [0, -0.30, 0], [0.90, 1.0, 1.0], WHITE);
-        drawCollar();
-
-        /* ===== KAKI (pivot di pinggul, berayun saat jalan) ===== */
-        for (var li = 0; li < 2; li++) {
-            var ls = li === 0 ? -1 : 1;
-            var legRx = ls * 0.55 * S.step * S.walk;                 // ayun maju-mundur
-            var fwd = ls < 0 ? S.stepCos : -S.stepCos;               // >0 = sedang melangkah maju
-            var lift = Math.max(0, fwd) * 0.14 * S.walk;             // kaki terangkat
-            setM(pivotRot(mul4(root, translateM(0, lift, 0)), ls * 0.5, -0.35, 0.05, legRx, 0, 0));
-            draw(leg, [ls * 0.50, -1.20, 0.05], [0.50, 0.90, 0.50], WHITE);
-        }
-        setM(root);
-
-        /* ===== LENGAN (pivot di bahu) =====
-           idle: tangan terlipat dekat dada | membungkuk: melebar ke samping | senang: merapat ke dada
-           jalan: berayun berlawanan dengan kaki satu sisi */
-        for (var si = 0; si < 2; si++) {
-            var side = si === 0 ? -1 : 1;
-            var swing = Math.sin(A.armPh + (side > 0 ? 0 : 1.1));
-            var rx = (-0.20 - 0.25 * S.ao) * (1 - h) - 1.0 * h + 0.07 * swing * h + 0.03 * swing * (1 - h)
-                     - side * 0.40 * S.step * S.walk
-                     - S.laugh * (0.75 - 0.15 * S.ha);                 // tangan memegang perut & bergetar
-            var ry = -side * (0.10 * (1 - h) + 0.42 * h + 0.30 * S.laugh);
-            var rz = side * ((0.08 + 0.05 * swing + 0.60 * S.ao) * (1 - h));
-            setM(pivotRot(root, side * 0.95, -0.05, 0.2, rx, ry, rz));
-            draw(sphere, [side * 1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, -side * 0.2]);
-            draw(sphere, [side * 1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
-        }
-
-        /* ===== EKOR ===== */
-        var wag = Math.sin(A.tailPh);
-        setM(pivotRot(root, 0.30, -1.10, -0.60, 0, 0.25 * wag * (1 + h), 0.08 * Math.sin(A.tailPh * 0.5 + 1) + 0.15 * Math.max(S.sq, 0)));
-        drawTail();
-
-        /* ===== KEPALA (pivot di leher) ===== */
-        var head = pivotRot(mul4(root, translateM(0, S.headY, 0)), NECK[0], NECK[1], NECK[2], S.pitch, S.yaw, S.roll);
-        setM(head);
-
+        // Head / Face
         draw(sphere, [0, 1.6, 0], [1.9, 1.55, 1.6], BLACK);
         draw(sphere, [0, 1.3, 0.8], [1.5, 1.0, 0.9], WHITE);
 
+        // Pointed black "widow's peak" of the hood that dips into the face (behind the skull)
         draw(peakMesh, [0, 0, 0], [1, 1, 1], BLACK);
         draw(skullMesh, [0, 0, 0], [1, 1, 1], SKULL_TINT);
 
-        drawEar(-1, S.earDelta, S.earFlare);
-        drawEar(1, S.earDelta, S.earFlare);
+        drawEar(-1);
+        drawEar(1);
 
-        drawEye(eyeL, -0.74, 1.17, 0.18, 0.22, -1, S.eyeO, S.eyeK);
-        drawEye(eyeR, 0.74, 1.17, 0.21, 0.25, 1, S.eyeO, S.eyeK);
+        // Eyes (viewer-left smaller, viewer-right larger, like the model)
+        drawEye(eyeL, -0.74, 1.17, 0.18, 0.22, -1);
+        drawEye(eyeR, 0.74, 1.17, 0.21, 0.25, 1);
 
+        // Nose & smile
         draw(sphere, [0, 1.03, 1.67], [0.17, 0.10, 0.07], PINK);
+        draw(smile, [0, -0.10, 0], [0.3, 1, 1], BLACK);
 
-        // pipi merona
-        if (S.blush > 0.03) {
-            for (var bi = 0; bi < 2; bi++) {
-                var bs = bi === 0 ? -1 : 1;
-                draw(sphere, [bs * 1.0, 0.92, faceZ(bs * 1.0, 0.92) - 0.02],
-                    [0.20 * S.blush, 0.12 * S.blush, 0.06], BLUSH, [0, bs * 0.55, 0]);
-            }
-        }
+        // Body: egg-shaped torso
+        draw(sphere, [0, -0.30, 0], [0.90, 1.0, 1.0], WHITE);
+        drawCollar();
 
-        // senyum -> mulut terbuka
-        if (S.mouth < 0.97) draw(smile, [0, -0.10, 0], [0.3 * (1 - 0.9 * S.mouth), 1, 1], BLACK);
-        if (S.mouth > 0.03) {
-            var m = S.mouth;
-            draw(sphere, [0, 0.69, 1.53], [0.15 * Math.sqrt(m), 0.11 * m, 0.10], MOUTH);
-        }
+        // Arms + round mitts
+        draw(sphere, [-1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, -0.2]);
+        draw(sphere, [1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, 0.2]);
+        draw(sphere, [-1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
+        draw(sphere, [1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
 
-        /* ===== EFEK KETAWA: air mata bahagia memercik + kilau berputar (ikut kepala) ===== */
-        if (S.laugh > 0.05) {
-            var lg = S.laugh;
-            for (var te = 0; te < 6; te++) {
-                var ts = te % 2 === 0 ? -1 : 1;
-                var tu = (now * 1.6 + te / 6) % 1;
-                var tx = ts * (0.95 + 1.0 * tu);
-                var ty = 1.12 + 1.1 * tu - 2.0 * tu * tu;                // translasi: memercik naik lalu jatuh
-                var tz = faceZ(ts * Math.min(Math.abs(tx), 1.45), ty) + 0.05;
-                var tsz = lg * 0.09 * (1 - 0.6 * tu);                    // scaling: mengecil saat jatuh
-                draw(sphere, [tx, ty, tz], [tsz, tsz * 1.3, tsz], TEAR);
-            }
-            for (var sp = 0; sp < 3; sp++) {
-                var su = (now * 0.9 + sp / 3) % 1;
-                var ssz = lg * 0.32 * Math.sin(Math.PI * su);            // scaling: muncul lalu hilang
-                drawStar(sp % 2 ? 2.3 + 0.3 * sp : -2.3 - 0.3 * sp, 2.4 + 0.5 * su, 1.2, ssz, STAR_Y, now * 2 + sp, 1);   // rotasi: berputar
-            }
-        }
+        // Legs: stubby, slightly flared columns with rounded soles
+        draw(leg, [-0.50, -1.20, 0.05], [0.50, 0.90, 0.50], WHITE);
+        draw(leg, [0.50, -1.20, 0.05], [0.50, 0.90, 0.50], WHITE);
 
-        /* ===== DEKORASI: kilau & hati muncul berurutan (ikut M saja, tidak ikut squash) ===== */
-        setM(M);
-        if (S.c >= 0) {
-            var hv = clamp01(h * 2);
-            for (var i = 0; i < DECOR.length; i++) {
-                var d = DECOR[i];
-                var u = (S.c - d.on) / 0.3;
-                if (u <= 0 || hv <= 0.01) continue;
-                var sc = d.size * easeOutBack(clamp01(u)) * hv * (1 + 0.12 * Math.sin(now * 7 + d.k));
-                var yy = d.y + 0.06 * Math.sin(now * 2.2 + d.k);
-                if (d.type === 'heart') drawHeart(d.x, yy, d.z, sc, d.col);
-                else drawStar(d.x, yy, d.z, sc, d.col, now * 1.5 + d.k, d.fat);   // bintang berputar
-            }
-        }
+        drawTail();
 
-        setM(M); // kembalikan supaya environment tidak terpengaruh
+        GL.flush();
+        requestAnimationFrame(animate);
     };
+    animate();
+}
 
-    // Tombol J = jalan (Walk), L = ketawa (Laugh), H = senang (Happy/cheer). Tidak perlu mengubah world.js
-    document.addEventListener("keydown", function (e) {
-        var tg = e.target && e.target.tagName;
-        if (tg === "INPUT" || tg === "TEXTAREA" || e.ctrlKey || e.metaKey || e.altKey) return;
-        var k = (e.key || "").toLowerCase();
-        if (k === "j") A.walking = !A.walking;
-        else if (k === "h") triggerCheer();
-        else if (k === "l") A.laughing = !A.laughing;
-    });
-
-    return {
-        draw: render,
-        cheer: triggerCheer,
-        laugh: function (on) { A.laughing = (on === undefined) ? !A.laughing : !!on; },
-        walk: function (on) { A.walking = (on === undefined) ? !A.walking : !!on; },
-        walkPath: function (on) { A.followPath = !!on; }   // false = jalan di tempat
-    };
-
-};
-
-})();
+window.addEventListener('load', main);
