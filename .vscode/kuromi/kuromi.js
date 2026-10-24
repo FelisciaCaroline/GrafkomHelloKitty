@@ -1,6 +1,6 @@
 // Kuromi sebagai "factory": window.createKuromi(GL, cam)
 // Canvas, kamera, input, dan loop ada di world.js. Environment digambar otomatis oleh environment.js.
-// Animasi (idle + cheer + walk + laugh + wave) dihitung di sini memakai performance.now(), jadi world.js tidak perlu diubah.
+// Animasi (idle + cheer + walk + laugh + wave) dihitung di sini memakai performance.now(), jadi world.js hanya perlu memanggil API-nya.
 // API:
 //   var k = window.createKuromi(GL, cam);
 //   k.cheer();          // memicu animasi senang manual
@@ -10,8 +10,10 @@
 //   k.walk('line');     // jalan LURUS (k.walk('circle') = jalan MUTER, k.walk(false) = berhenti, k.walk() = toggle)
 //   k.walkPath(false);  // false = jalan di tempat (tanpa berpindah posisi)
 //   k.setGround(function (x, z) { return tinggiTanah; });  // deteksi tinggi tanah/map (koordinat dunia)
+//   k.toggle('walk');   // jalan lurus (k.toggle('circle') = jalan muter); panggil lagi = berhenti
+//   k.stop();           // berhenti jalan
 //   k.getPos();         // [x, y, z] posisi dunia sekarang (null sebelum frame pertama), dipakai world.js supaya kamera mengikuti
-// Tombol (dipasang di file ini): J = jalan lurus, C = jalan muter, H = senang (cheer), K = ketawa, W = melambai
+// Tombol diatur di world.js (hanya aktif saat Kuromi difokus): J = walk, C = circle, H = cheer, K = laugh, V = wave
 (function () {
 
 function gridIndices(rows, cols) {
@@ -472,7 +474,7 @@ window.createKuromi = function (GL, cam) {
     var TAIL_STEPS = 36, TAIL_SEG = 12;
     var tailProfile = function (t) { return [0.19 * (1 - 0.35 * t), 0.15 * (1 - 0.35 * t)]; };
     var tailPathStatic = [
-        [0.30, -1.10, -0.600],
+        [0.30, -0.7, -0.6],
         [0.80, -1.20, -0.733],
         [1.30, -0.733, -0.867],
         [1.80, 0.20, -1.000]
@@ -651,7 +653,7 @@ window.createKuromi = function (GL, cam) {
 
     var drawTail = function () {
         draw(tail, [0, 0, 0], [1, 1, 1], BLACK);
-        draw(cone, [1.8, 0.2, -1.0], [0.32, 0.45, 0.14], BLACK, [0, 0, -0.49]);
+        draw(cone, [1.8, 0.2, -1.0], [0.32, 0.45, 0.14], BLACK, [0, 0, -0.69]);
     };
 
     // kilau 4 sudut: dua belah ketupat tipis bersilang. fat > 1 = lebih gemuk (kilau oranye)
@@ -704,7 +706,7 @@ window.createKuromi = function (GL, cam) {
          LINE_ANGLE : arah jalan. 0 = ke bawah layar / arah kamera, Math.PI/2 = ke kanan layar
        Mode 'circle' : jalan memutar membentuk lingkaran berjari-jari CIRCLE_R.
        Posisi terakhir (A.x, A.z) selalu disimpan, jadi setelah animasi lain dia lanjut dari titik itu. */
-    var WALK_SPEED = 1.6;                 // kecepatan (unit/detik)
+    var WALK_SPEED = 2.3;                 // kecepatan (unit/detik)
     var STRAIGHT_DIST = Infinity;         // jarak maksimum jalan lurus. Infinity = jalan terus sampai tombol J ditekan lagi
     var LINE_ANGLE = 0;                   // arah jalan lurus: 0 = ke bawah layar (arah kamera), Math.PI = ke atas, Math.PI/2 = kanan, -Math.PI/2 = kiri
     var TURN_SPEED = 4.0;                 // kecepatan berputar badan (rad/detik)
@@ -720,7 +722,7 @@ window.createKuromi = function (GL, cam) {
        GROUND_LIFT  : naikkan Kuromi dari tanah (unit dunia). Kalau kaki masih tenggelam, besarkan; kalau melayang, kecilkan; boleh negatif
        k.setGround(fn) : fn(x, z) -> tinggi tanah di titik itu, untuk map yang bergelombang (bukit, jalan, kolam) */
     var GROUND_Y = 0;
-    var GROUND_LIFT = 0.15;
+    var GROUND_LIFT = -0.2;
     var groundFn = null;                  // diisi k.setGround(fn). Kalau kosong, otomatis memakai ENV.groundHeight dari environment.js
     var getGround = function () {
         if (groundFn) return groundFn;
@@ -906,7 +908,7 @@ window.createKuromi = function (GL, cam) {
             S.blush = Math.max(S.blush, lf);
         }
         if (wv > 0.01) {
-            S.mouth = Math.max(S.mouth, 0.55 * wv);                 // senyum lebar saat melambai
+            S.mouth = Math.max(S.mouth, 1.2 * wv);                 // senyum lebar saat melambai
             S.blush = Math.max(S.blush, 0.8 * wv);
         }
         return S;
@@ -991,12 +993,12 @@ window.createKuromi = function (GL, cam) {
             if (wvS > 0.001) {
                 rx = rx * (1 - wvS) + (-0.45) * wvS;                   // sedikit ke depan supaya tidak tertutup kepala
                 ry = ry * (1 - wvS);
-                rz = rz * (1 - wvS) + side * (2.3 + 0.32 * Math.sin(S.wavePh)) * wvS;   // ROTASI: terangkat + diayun
+                rz = rz * (1 - wvS) + side * (1.5 + 0.32 * Math.sin(S.wavePh)) * wvS;   // ROTASI: terangkat + diayun
             }
 
             setM(pivotRot(root, side * 0.95, -0.05, 0.2, rx, ry, rz));
             draw(sphere, [side * 1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, -side * 0.2]);
-            draw(sphere, [side * 1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
+            draw(sphere, [side * 1.17, -0.90, 0.30], [0.35, 0.45, 0.32], WHITE);
         }
 
         /* ===== EKOR ===== */
@@ -1102,17 +1104,7 @@ window.createKuromi = function (GL, cam) {
         A.walking = true;
     };
 
-    // Tombol J = jalan lurus, C = jalan muter, H = senang (cheer), K = ketawa, W = melambai. Tidak perlu mengubah world.js
-    document.addEventListener("keydown", function (e) {
-        var tg = e.target && e.target.tagName;
-        if (tg === "INPUT" || tg === "TEXTAREA" || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-        var k = (e.key || "").toLowerCase();
-        if (k === "j") toggleWalk('line');
-        else if (k === "c") toggleWalk('circle');
-        else if (k === "h") triggerCheer();
-        else if (k === "k") toggleLaugh();
-        else if (k === "v") triggerWave();
-    });
+    // Tombol TIDAK dipasang di file ini: world.js yang memanggil API di bawah, hanya saat Kuromi sedang difokus.
 
     return {
         draw: render,
@@ -1126,6 +1118,12 @@ window.createKuromi = function (GL, cam) {
         },
         pos: function () { return [A.x, A.z]; },
         getPos: function () { return worldPos; },   // posisi dunia karakter sekarang (kamera mengikuti), sama seperti Hangyodon
+        // dipanggil world.js: o.toggle("walk") = jalan lurus, o.toggle("circle") = jalan muter; panggil lagi = berhenti
+        toggle: function (name) {
+            if (name === "walk" || name === "line") toggleWalk('line');
+            else if (name === "circle") toggleWalk('circle');
+        },
+        stop: function () { A.walking = false; },
         setGround: function (fn) { groundFn = (typeof fn === "function") ? fn : null; A.gdy = null; },
         walkPath: function (on) { A.followPath = !!on; }   // false = jalan di tempat
     };

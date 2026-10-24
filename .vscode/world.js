@@ -3,12 +3,15 @@
 //   Drag mouse       = putar kamera,  scroll / pinch = zoom,  panah = putar kamera
 //   W A S D (Q / E)  = geser titik bidik kamera (maju/mundur/kiri/kanan, turun/naik)
 //   I H J K L M T N R = animasi karakter yang sedang difokus (lihat HUD)
+//   F                = FORMASI: semua karakter jalan ke slot barisnya, lalu menghadap arah yang ditentukan
+//   P                = cetak posisi & arah hadap SEMUA karakter ke console (siap ditempel ke FORM_SLOTS / FORM_FACE_DEG di formation.js)
 //   Badtz: J jalan rotasi, L jalan lurus, M jamur tumbuh + tersandung, T marah, N dance, I idle, R reset posisi
 //   Hangyodon: I idle, H happy, J walk (toggle), K circle (toggle), L slip & dry
 //   (animasi berjalan terus sampai tombol lain ditekan; posisi terakhir dipertahankan)
 // environment.js (sudah dimuat lewat <script>) memasang diri ke context ini dan
 // menggambar langit/tanah/pohon otomatis sebelum draw pertama tiap frame.
 import { createHangyodon } from "./hangyodon/main_hangyodon.js";
+import { createFormation } from "./formation.js";
 
 var CANVAS = document.getElementById("mycanvas");
 var HUD = document.getElementById("hud");
@@ -54,9 +57,9 @@ var chars = [
 // Aksi per karakter: key -> fungsi. Tambah animasi baru cukup menambah satu baris di sini.
 chars[0].actions = [
     { key: "j", label: "Walk",   run: function (o) { o.toggle("walk"); } },      // jalan lurus; tekan J lagi = berhenti
-    { key: "c", label: "Circle", run: function (o) { o.toggle("circle"); } },    // jalan melingkar; tekan K lagi = berhenti
+    { key: "c", label: "Circle", run: function (o) { o.toggle("circle"); } },    // jalan melingkar; tekan C lagi = berhenti
     { key: "h", label: "Happy",  run: function (o) { o.cheer(); } },
-    { key: "k", label: "Laugh",  run: function (o) { o.laugh(); } },
+    { key: "l", label: "Laugh",  run: function (o) { o.laugh(); } },
     { key: "v", label: "Wave",   run: function (o) { o.wave(); } }
 ];
 chars[1].actions = [
@@ -86,6 +89,10 @@ function modelMatrix(c) {
     M[12] = c.x;    M[13] = c.y; M[14] = c.z;  M[15] = 1;
 }
 
+/*======================== FORMASI (tombol F) ========================*/
+// Seluruh pengaturan formasi (posisi akhir, arah hadap, animasi akhir) ada di formation.js
+var formation = createFormation(chars, modelMatrix);
+
 /*======================== KAMERA ORBIT ========================*/
 var active = 0;                       // karakter yang sedang disorot kamera
 var FOCUS_DIST = 11;                  // jarak kamera per skala karakter
@@ -105,6 +112,7 @@ var updateHud = function () {
     var list = chars.map(function (c, i) { return (i === active ? "▶ " : "   ") + i + " = " + c.name; });
     var acts = chars[active].actions.map(function (a) { return a.key.toUpperCase() + " = " + a.label; });
     HUD.textContent = list.join("\n") + "\n\n" + chars[active].name + ": " + acts.join("   ") +
+        "\nF = semua karakter berbaris (formasi)   P = cetak posisi ke console" +
         "\nWASD/QE = geser kamera   drag = putar   scroll = zoom";
 };
 
@@ -200,6 +208,8 @@ window.addEventListener("keydown", function (e) {
     // 0 = Kuromi, 1 = Badtz-Maru, 2 = Hangyodon
     if (k === "0" || k === "1" || k === "2") focusOn(+k);
     if (!e.ctrlKey && !e.metaKey) {
+        if (k === "f") formation.start();                         // FORMASI: berlaku untuk SEMUA karakter
+        if (k === "p") formation.print();                    // cetak posisi & arah hadap ke console
         var ch = chars[active];
         ch.actions.forEach(function (a) { if (a.key === k) a.run(ch.obj); });
     }
@@ -240,6 +250,9 @@ function frame(now) {
     if (keys["a"]) { pan[0] -= rx * sp; pan[2] -= rz * sp; }
     if (keys["e"]) pan[1] += sp;
     if (keys["q"]) pan[1] -= sp;
+
+    // formasi (tombol F): mengatur arah hadap & memulai/menghentikan jalan semua karakter
+    formation.update(t);
 
     // semua karakter menapak tanah, lalu susun model matrix
     chars.forEach(function (ch) {
