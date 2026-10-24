@@ -2,19 +2,28 @@
 // mode 'idle'  -> animasi idle (halaman index.html)
 // mode 'dance' -> animasi joget senang (halaman dance.html)
 //
-// TOMBOL: J = Walk | T = Tantrum | D = Dance | I = Idle
+// TOMBOL (mode standalone): J = Jalan melingkar | L = Jalan lurus | M = Tersandung jamur | T = Marah | D = Dance | I = Idle
+// (di world.js tombol dikelola world.js -> constructor dipanggil dengan bindKeys = false)
 //
-// API tambahan:
-//   badtz.walk(true)      // mulai jalan (walk() = toggle, walk(false) = berhenti)
+// ATURAN ANIMASI: tiap animasi yang dipicu berjalan TERUS sampai ada animasi lain dipicu.
+// Saat berganti, posisi & arah hadap terakhir dipertahankan (this.pos, this.heading).
+// Satu-satunya animasi sekali-jalan: tripOver() (jamur tumbuh -> jalan sedikit -> tersandung -> jatuh -> bangun -> idle).
+//
+// API:
+//   badtz.walk()          // jalan melingkar terus-menerus (walk(false) = idle)
 //   badtz.walkPath(false) // false = jalan di tempat (tidak berkeliling lingkaran)
-//   badtz.rage(true)      // mulai tantrum (rage() = toggle, rage(false) = berhenti)
-//   badtz.dance() / badtz.idle()   // pindah ke mode joget / idle
+//   badtz.walkStraight()  // jalan lurus terus-menerus ke arah hadap (walkStraight(false) = idle)
+//   badtz.tripOver()      // jamur tumbuh di depan, jalan sedikit, tersandung, jatuh, bangun, lalu idle
+//   badtz.rage()          // tantrum terus-menerus (rage(false) = idle)
+//   badtz.dance() / badtz.idle()   // joget / idle di posisi terakhir
+//   badtz.resetPosition() // kembali ke titik awal & arah awal
 //   badtz.walkRadius = 3  // radius lingkaran jalan
-//   badtz.walkSpeed  = 1.4 // kecepatan jalan (unit/detik)
+//   badtz.walkSpeed  = 1.4 // kecepatan jalan melingkar (unit/detik)
+//   badtz.straightSpeed = 1.6 // kecepatan jalan lurus (unit/detik)
 // Catatan: parameter `time` pada render() harus dalam DETIK.
 
 class BadtzMaru {
-    constructor(gl, programInfo, mode = 'idle') {
+    constructor(gl, programInfo, mode = 'idle', bindKeys = true) {
         this.gl = gl;
         this.programInfo = programInfo;
         this.mode = mode;
@@ -22,57 +31,98 @@ class BadtzMaru {
         this.mvMatrix = mat4.create();
         this.mvMatrixStack = [];
 
+        // ===== animasi aktif: 'idle' | 'walk' | 'straight' | 'rage' | 'dance' | 'trip' =====
+        this.action = (mode === 'dance') ? 'dance' : 'idle';
+
+        // ===== posisi & arah hadap TERAKHIR (koordinat lokal karakter; dipertahankan antar animasi) =====
+        this.pos = { x: 0, z: 0 };
+        this.heading = 0;              // rotasi sumbu Y (radian); 0 = menghadap +z
+        this.moveType = 'none';        // 'circle' | 'straight' | 'none'
+        this.groundFn = null;          // diisi badtz_entry.js: tinggi tanah relatif di (x, z) lokal
+
         // ===== state jalan =====
-        this.walking = false;       // sedang diperintah jalan?
+        this.walking = false;
         this.followPath = true;     // true = berkeliling lingkaran, false = jalan di tempat
         this.walkRadius = 3.0;
         this.walkSpeed = 1.4;
+        this.straightSpeed = 1.6;
         this.walkState = { last: null, amt: 0, ph: 0, pathAng: 0 };
 
         // ===== state tantrum =====
         this.raging = false;
         this.rageState = { amt: 0, ph: 0, armPh: 0, spin: 0 };
 
-        // Tombol: J = Walk, T = Tantrum, D = Dance, I = Idle
-        if (typeof document !== 'undefined') {
+        // ===== state tersandung jamur =====
+        this.tripGap = 2.8;            // jarak jamur tumbuh di depan Badtz
+        this.tripContact = 1.4;        // Badtz berhenti jalan & tersandung saat jamur tinggal sejauh ini
+        this.trip = { active: false, phase: 'idle', t: 0, slideApplied: 0, dir: [0, 1] };
+        this.tripFx = { pitch: 0, st: 0, fall: 0 };      // efek tubuh (dihaluskan saat animasi dibatalkan)
+        this.mush = { on: false, state: 'stay', t: 0, grow: 0, x: 0, z: 0 };
+
+        // Tombol standalone (di world.js: bindKeys = false)
+        if (bindKeys && typeof document !== 'undefined') {
             document.addEventListener('keydown', (e) => {
                 const tg = e.target && e.target.tagName;
                 if (tg === 'INPUT' || tg === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey) return;
                 const k = (e.key || '').toLowerCase();
                 if (k === 'j') this.walk();
                 else if (k === 't') this.rage();
+                else if (k === 'l') this.walkStraight();
+                else if (k === 'm') this.tripOver();
                 else if (k === 'd') this.dance();
                 else if (k === 'i') this.idle();
             });
         }
     }
 
-    // Walk: toggle jalan (otomatis keluar dari mode dance)
-    walk(on) {
-        const v = (on === undefined) ? !this.walking : !!on;
-        if (v && this.mode === 'dance') this.mode = 'idle';
-        this.walking = v;
+    // ===== PENGATUR ANIMASI =====
+    // Ganti animasi. Posisi & arah hadap TIDAK diubah (dipertahankan dari animasi sebelumnya).
+    _set(action) {
+        // jamur sisa animasi jatuh menyusut begitu ada tombol lain ditekan
+        if (action !== 'trip' && this.mush.on && this.mush.state !== 'shrink') this.mush.state = 'shrink';
+        if (action === 'trip' && this.trip.active) return false;
+        if (this.action === action && action !== 'trip') return false;
+
+        // keluar dari tantrum: putaran badan "dilebur" ke arah hadap supaya tidak loncat & arah terakhir tetap
+        if (this.action === 'rage') {
+            this.heading += this.rageState.spin;
+            this.rageState.spin = 0;
+        }
+        this.action = action;
+        this.mode = (action === 'dance') ? 'dance' : 'idle';
+        this.walking = (action === 'walk');
+        this.raging = (action === 'rage');
+        if (action === 'walk') this.moveType = this.followPath ? 'circle' : 'none';
+        else if (action === 'straight') this.moveType = 'straight';
+        if (action !== 'trip') { this.trip.active = false; this.trip.phase = 'idle'; }
+        return true;
     }
-    walkPath(on) { this.followPath = !!on; }
-    // Tantrum: toggle tantrum (otomatis keluar dari mode dance)
-    rage(on) {
-        const v = (on === undefined) ? !this.raging : !!on;
-        if (v && this.mode === 'dance') this.mode = 'idle';
-        this.raging = v;
+    // Jalan melingkar, terus-menerus sampai animasi lain dipicu
+    walk(on) { this._set(on === false ? 'idle' : 'walk'); }
+    walkPath(on) { this.followPath = !!on; if (this.action === 'walk') this.moveType = this.followPath ? 'circle' : 'none'; }
+    // Jalan lurus ke arah hadap, terus-menerus sampai animasi lain dipicu
+    walkStraight(on) { this._set(on === false ? 'idle' : 'straight'); }
+    // Tantrum, terus-menerus sampai animasi lain dipicu
+    rage(on) { this._set(on === false ? 'idle' : 'rage'); }
+    dance() { this._set('dance'); }
+    idle() { this._set('idle'); }
+    // Tersandung: jamur tumbuh di depan -> jalan sedikit (lanjut dari posisi sekarang) -> tersandung -> jatuh -> bangun -> idle
+    tripOver() {
+        if (this.trip.active) return;
+        this._set('trip');
+        this.moveType = 'straight';
+        const dx = Math.sin(this.heading), dz = Math.cos(this.heading);
+        const gap = this.tripGap;
+        this.trip = { active: true, phase: 'grow', t: 0, slideApplied: 0, dir: [dx, dz] };
+        this.mush = { on: true, state: 'grow', t: 0, grow: 0, x: this.pos.x + dx * gap, z: this.pos.z + dz * gap };
     }
-    // Dance: berhenti jalan/tantrum, kembali ke posisi awal, lalu joget
-    dance() {
-        this.mode = 'dance';
-        this.walking = false;
-        this.raging = false;
-        this.walkState.pathAng = 0;
+    // Kembali ke titik awal & arah awal
+    resetPosition() {
+        this._set('idle');
+        this.pos.x = 0; this.pos.z = 0; this.heading = 0;
         this.rageState.spin = 0;
-    }
-    // Idle: hentikan semuanya (jalan & tantrum diselesaikan dulu sampai kembali ke posisi/arah awal)
-    idle() {
-        this.mode = 'idle';
-        this.walking = false;
-        this.raging = false;
+        this.trip.active = false;
+        this.mush.on = false;
     }
 
     pushMatrix() { this.mvMatrixStack.push(mat4.clone(this.mvMatrix)); }
@@ -149,6 +199,11 @@ class BadtzMaru {
         this.buffers.cheek   = createBuffer(this.gl, createEllipsoid(0.24, 0.15, 0.07, colorCheek));    // pipi merah
         this.buffers.smoke   = createBuffer(this.gl, createEllipsoid(0.3, 0.3, 0.3, colorSmoke));       // uap di kepala
         this.buffers.dust    = createBuffer(this.gl, createEllipsoid(0.3, 0.3, 0.3, colorDust));        // debu hentakan kaki
+
+        // ===== Jamur (rintangan) =====
+        this.buffers.mushStem = createBuffer(this.gl, createEllipsoid(0.27, 0.27, 0.27, [0.98, 0.93, 0.84, 1.0]));
+        this.buffers.mushCap  = createBuffer(this.gl, createEllipsoid(0.85, 0.5, 0.85, [0.96, 0.46, 0.60, 1.0], 0.5)); // setengah (dipakai dibalik = kubah)
+        this.buffers.mushDot  = createBuffer(this.gl, createEllipsoid(0.14, 0.14, 0.14, [1.0, 0.92, 0.95, 1.0]));
     }
 
     render(projectionMatrix, viewMatrix, time, xOffset = 0, yOffset = 0, zOffset = 0) {
@@ -166,38 +221,102 @@ class BadtzMaru {
         ws.last = time;
 
         // ===== STATE TANTRUM =====
-        // Saat dihentikan, putaran badan diselesaikan sampai tepat 360° supaya kembali menghadap depan.
         const rs = this.rageState;
-        const rageFinish = !this.raging && rs.spin > 0;
-        const rageActive = !dance && (this.raging || rageFinish);
+        const rageActive = !dance && this.raging;
         rs.amt += ((rageActive ? 1 : 0) - rs.amt) * (1 - Math.exp(-7 * dtw));
         const r = rs.amt;                                   // 0 = tenang, 1 = tantrum penuh
         rs.ph    += dtw * TWO_PI * 1.6 * r;                 // fase hentakan kaki
         rs.armPh += dtw * TWO_PI * 0.6 * r;                 // fase lempar tangan
-        if (rageActive) {
-            rs.spin += dtw * 1.6 * r;                       // muter-muter (~0.9 putaran/detik)
-            if (rs.spin >= TWO_PI) {
-                rs.spin -= TWO_PI;
-                if (!this.raging) rs.spin = 0;              // sudah berhenti: tepat kembali ke arah semula
-            }
-        }
+        if (rageActive) rs.spin += dtw * 1.6 * r;           // muter-muter (~0.9 putaran/detik); dilebur ke heading saat berganti animasi
         const sSt = Math.sin(rs.ph);                        // + = kaki kanan terangkat, - = kaki kiri terangkat
         const impact = Math.pow(1 - Math.abs(sSt), 6);      // lonjakan tajam saat telapak menghantam tanah
         const pulse = 0.5 + 0.5 * Math.sin(time * 20);      // denyut napas marah
 
-        // ===== STATE JALAN =====
-        const finishing = this.followPath && ws.pathAng > 0;          // setelah berhenti, selesaikan putaran sampai titik awal
-        const wOn = !dance && !rageActive && (this.walking || finishing);
+        const ease = (x) => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
+        const tr = this.trip, ms = this.mush, fx = this.tripFx;
+
+        // ===== STATE JAMUR (tumbuh / diam / menyusut) =====
+        if (ms.on) {
+            if (ms.state === 'grow') {
+                ms.t = Math.min(1, ms.t + dtw / 1.0);
+                const x1 = ms.t - 1, c1 = 1.70158, c3 = c1 + 1;
+                ms.grow = 1 + c3 * x1 * x1 * x1 + c1 * x1 * x1;      // easeOutBack: tumbuh lalu "pop" sedikit
+                if (ms.t >= 1) { ms.state = 'stay'; ms.grow = 1; }
+            } else if (ms.state === 'shrink') {
+                ms.grow -= dtw / 0.4;
+                if (ms.grow <= 0) { ms.on = false; ms.grow = 0; }
+            }
+        }
+
+        // ===== STATE JALAN (gait) =====
+        const tripWalking = tr.active && tr.phase === 'walk';
+        const wOn = !dance && !rageActive && (this.action === 'walk' || this.action === 'straight' || tripWalking);
         ws.amt += ((wOn ? 1 : 0) - ws.amt) * (1 - Math.exp(-6 * dtw));
         const w = ws.amt;                                            // 0 = berdiri, 1 = jalan penuh
         ws.ph += dtw * TWO_PI * 1.1 * w;                             // 1.1 siklus langkah / detik
-        if (this.followPath && wOn) {
-            ws.pathAng += dtw * w * this.walkSpeed / this.walkRadius;
-            if (ws.pathAng >= TWO_PI) {
-                ws.pathAng -= TWO_PI;
-                if (!this.walking) ws.pathAng = 0;                   // sudah berhenti: tepat kembali ke posisi awal
+
+        // ===== PERPINDAHAN: posisi & arah hadap diintegrasi, jadi tetap di tempat terakhir saat berganti animasi =====
+        if (w > 0.0005 && this.moveType !== 'none') {
+            const v = dtw * w * (this.moveType === 'circle' ? this.walkSpeed : this.straightSpeed);
+            if (this.moveType === 'circle') this.heading += v / this.walkRadius;   // belok terus -> melingkar
+            this.pos.x += Math.sin(this.heading) * v;
+            this.pos.z += Math.cos(this.heading) * v;
+        }
+
+        // ===== ALUR TERSANDUNG: tumbuh -> jalan sedikit -> tersandung -> jatuh -> tergeletak -> bangun =====
+        const T_GROW = 1.25, T_STUMBLE = 0.40, T_FALL = 0.55, T_LIE = 1.10, T_RISE = 0.90;
+        const T_TOTAL = T_STUMBLE + T_FALL + T_LIE + T_RISE;
+        let pitchT = 0, stT = 0, fallT = 0, tripLive = false;
+        if (tr.active) {
+            if (tr.phase === 'grow') {
+                tr.t += dtw;                                         // diam menunggu jamur tumbuh
+                if (tr.t >= T_GROW) { tr.phase = 'walk'; tr.t = 0; }
+            } else if (tr.phase === 'walk') {
+                const ahead = (ms.x - this.pos.x) * tr.dir[0] + (ms.z - this.pos.z) * tr.dir[1];
+                if (ahead <= this.tripContact) { tr.phase = 'trip'; tr.t = 0; this.moveType = 'none'; }
+            }
+            if (tr.phase === 'trip') {
+                tr.t += dtw;
+                const t1 = T_STUMBLE, t2 = t1 + T_FALL, t3 = t2 + T_LIE;
+                let slide;
+                if (tr.t < t1) {                                     // tersandung: badan condong, kaki depan nyangkut
+                    stT = ease(tr.t / t1);
+                    pitchT = 0.28 * stT;
+                    slide = 0.12 * stT;
+                } else if (tr.t < t2) {                              // jatuh: tengkurap ke depan (makin cepat)
+                    const p = (tr.t - t1) / T_FALL;
+                    stT = 1 - p; fallT = ease(p);
+                    pitchT = 0.28 + (Math.PI / 2 - 0.28) * p * p;
+                    slide = 0.12 + 0.55 * ease(p);
+                } else if (tr.t < t3) {                              // tergeletak (sedikit memantul saat mendarat)
+                    const q = tr.t - t2;
+                    pitchT = Math.PI / 2 - 0.05 * Math.exp(-q * 7) * Math.abs(Math.sin(q * 16));
+                    fallT = 1; slide = 0.67;
+                } else if (tr.t < T_TOTAL) {                         // bangun lagi (di tempat)
+                    const p = ease((tr.t - t3) / T_RISE);
+                    pitchT = (Math.PI / 2) * (1 - p);
+                    fallT = 1 - p; slide = 0.67;
+                } else {                                             // selesai -> idle di tempat jatuh tadi (jamur tetap)
+                    tr.active = false; tr.phase = 'idle';
+                    this.action = 'idle'; this.mode = 'idle';
+                    slide = 0.67;
+                }
+                // badan meluncur ke depan: dimasukkan ke posisi (bukan efek sementara) -> tidak balik saat animasi berganti
+                const dSlide = slide - tr.slideApplied;
+                tr.slideApplied = slide;
+                this.pos.x += tr.dir[0] * dSlide;
+                this.pos.z += tr.dir[1] * dSlide;
+                tripLive = tr.active;
             }
         }
+        if (tripLive) { fx.pitch = pitchT; fx.st = stT; fx.fall = fallT; }
+        else {                                                       // animasi dibatalkan/selesai: efek tubuh kembali halus ke normal
+            const k = 1 - Math.exp(-7 * dtw);
+            fx.pitch -= fx.pitch * k; fx.st -= fx.st * k; fx.fall -= fx.fall * k;
+        }
+        const pitch = fx.pitch, stumbleAmt = fx.st, fallAmt = fx.fall;
+        const gOff = this.groundFn ? this.groundFn(this.pos.x, this.pos.z) : 0;   // menapak tanah yang naik-turun
+
         const stepS = Math.sin(ws.ph), stepC = Math.cos(ws.ph);
         const stepB = Math.cos(2 * ws.ph);                           // 2x per siklus = tiap langkah
 
@@ -243,14 +362,60 @@ class BadtzMaru {
         // ===== GERAKAN MATA KIRI-KANAN =====
         const glance = Math.sin(time * 0.7) * Math.sin(time * 0.43) * 0.06;
 
-        // ===== TRANSFORMASI ROOT JALAN: semua bagian karakter ikut (hierarchy) =====
-        // Saat pathAng = 0 dan w = 0, bagian ini tidak mengubah apa-apa -> posisi berdiri sama persis seperti semula.
-        if (this.followPath && ws.pathAng !== 0) {
-            // TRANSLASI + ROTASI HADAP: berkeliling lingkaran yang melewati posisi awal, menghadap arah gerak
-            mat4.translate(this.mvMatrix, this.mvMatrix, [this.walkRadius, 0.0, 0.0]);
-            mat4.rotate(this.mvMatrix, this.mvMatrix, ws.pathAng, [0, 1, 0]);
-            mat4.translate(this.mvMatrix, this.mvMatrix, [-this.walkRadius, 0.0, 0.0]);
+        // ===== JAMUR (tumbuh saat tombol jatuh ditekan; digambar di dunia, sebelum transformasi karakter) =====
+        if (ms.on && ms.grow > 0.001) {
+            const gm = this.groundFn ? this.groundFn(ms.x, ms.z) : 0;
+            const groundLocal = -2.57 + gm;                        // tinggi tanah di koordinat lokal (sama dgn `foot` di world.js)
+            const sc = ms.grow;
+            // gepeng saat ditendang, lalu tertimpa badan saat jatuh (mengembang lagi saat Badtz bangun)
+            const squash = Math.max(0.12, 1 - 0.25 * stumbleAmt - 0.85 * fallAmt);
+            this.pushMatrix();
+                mat4.translate(this.mvMatrix, this.mvMatrix, [ms.x, groundLocal, ms.z]);
+                mat4.scale(this.mvMatrix, this.mvMatrix, [sc, sc * squash, sc]);
+                this.pushMatrix();
+                    mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, 0.27, 0.0]);
+                    drawBuffer(this.gl, this.programInfo, this.mvMatrix, projectionMatrix, this.buffers.mushStem);
+                this.popMatrix();
+                this.pushMatrix();
+                    mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, 0.42, 0.0]);
+                    mat4.scale(this.mvMatrix, this.mvMatrix, [1.0, -1.0, 1.0]);       // setengah bawah dibalik = kubah
+                    drawBuffer(this.gl, this.programInfo, this.mvMatrix, projectionMatrix, this.buffers.mushCap);
+                this.popMatrix();
+                for (let k = 0; k < 5; k++) {
+                    const a = k * 2 * Math.PI / 5 + 0.5, rr = 0.52;
+                    const dy = 0.5 * Math.sqrt(Math.max(0, 1 - (rr * rr) / (0.85 * 0.85)));
+                    this.pushMatrix();
+                        mat4.translate(this.mvMatrix, this.mvMatrix, [rr * Math.cos(a), 0.42 + dy - 0.02, rr * Math.sin(a)]);
+                        drawBuffer(this.gl, this.programInfo, this.mvMatrix, projectionMatrix, this.buffers.mushDot);
+                    this.popMatrix();
+                }
+                this.pushMatrix();
+                    mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, 0.42 + 0.5 - 0.02, 0.0]);
+                    drawBuffer(this.gl, this.programInfo, this.mvMatrix, projectionMatrix, this.buffers.mushDot);
+                this.popMatrix();
+            this.popMatrix();
         }
+
+        // ===== TRANSFORMASI ROOT POSISI + ARAH HADAP: semua bagian karakter ikut (hierarchy) =====
+        // Posisi (pos) & arah (heading) adalah posisi TERAKHIR; bagian ini tidak mengubah apa-apa saat masih di titik awal.
+        if (this.pos.x !== 0 || this.pos.z !== 0 || gOff !== 0) {
+            // TRANSLASI ke posisi terakhir (+ mengikuti tinggi tanah)
+            mat4.translate(this.mvMatrix, this.mvMatrix, [this.pos.x, gOff, this.pos.z]);
+        }
+        if (this.heading !== 0) {
+            // ROTASI hadap (sumbu Y) di titik berdiri
+            mat4.rotate(this.mvMatrix, this.mvMatrix, this.heading, [0, 1, 0]);
+        }
+        if (pitch > 0.0005) {
+            // ROTASI (sumbu X) pivot di telapak kaki: badan condong/rebah ke depan; diangkat sedikit agar perut/kepala tidak menembus tanah
+            mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, 1.1 * Math.sin(Math.min(pitch, Math.PI / 2)), 0.0]);
+            mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, -2.6, 0.0]);
+            mat4.rotate(this.mvMatrix, this.mvMatrix, pitch, [1, 0, 0]);
+            mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, 2.6, 0.0]);
+        }
+
+        // ===== TRANSFORMASI ROOT JALAN (gaya langkah): semua bagian karakter ikut (hierarchy) =====
+        // Saat w = 0, bagian ini tidak mengubah apa-apa.
         if (w > 0.0005) {
             // 1. TRANSLASI: memantul tiap langkah
             mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, w * 0.06 * (0.5 + 0.5 * stepB), 0.0]);
@@ -330,8 +495,9 @@ class BadtzMaru {
             [-1, 1].forEach(side => {
                 const footLift = dance ? Math.max(0, side * ds) * 0.05 : 0;
                 const rageLift = 0.32 * r * Math.pow(Math.max(0, side * sSt), 1.2);   // terangkat tinggi sebelum dihentak
-                const swingAng = side * stepS * 0.55 * w + rageLift * 1.6;            // ayun maju-mundur
-                const stepLift = Math.max(0, side * stepC) * 0.12 * w + rageLift;     // terangkat
+                const tripFoot = side > 0 ? stumbleAmt : 0;                           // kaki kanan nyangkut di jamur
+                const swingAng = side * stepS * 0.55 * w + rageLift * 1.6 + tripFoot * 0.7 - fallAmt * side * 0.15;   // ayun maju-mundur
+                const stepLift = Math.max(0, side * stepC) * 0.12 * w + rageLift + tripFoot * 0.2;     // terangkat
 
                 // debu muncul sesaat setelah telapak menghantam tanah
                 const m = (((rs.ph + (side < 0 ? Math.PI : 0)) % TWO_PI) + TWO_PI) % TWO_PI;
@@ -378,8 +544,12 @@ class BadtzMaru {
 
                         mat4.translate(this.mvMatrix, this.mvMatrix, [side * 1.02, 0.3, 0.1]);
                         // ayun saat jalan: berlawanan dengan kaki di sisi yang sama
-                        mat4.rotate(this.mvMatrix, this.mvMatrix, side * stepS * 0.45 * w + rageArmX, [1, 0, 0]);
-                        mat4.rotate(this.mvMatrix, this.mvMatrix, side * (armRest + armLift + rageArmZ), [0, 0, 1]);
+                        // tersandung: tangan terkibas panik, lalu terjulur ke depan menahan jatuh (rotasi X negatif = ke depan)
+                        const flail = stumbleAmt * (0.9 + 0.5 * Math.sin(time * 22 + (side > 0 ? 0 : 1.7)));
+                        const tripArmX = -(flail + fallAmt * 1.6);
+                        const tripArmZ = stumbleAmt * 0.5 + fallAmt * 0.35;
+                        mat4.rotate(this.mvMatrix, this.mvMatrix, side * stepS * 0.45 * w + rageArmX + tripArmX, [1, 0, 0]);
+                        mat4.rotate(this.mvMatrix, this.mvMatrix, side * (armRest + armLift + rageArmZ + tripArmZ), [0, 0, 1]);
                         mat4.scale(this.mvMatrix, this.mvMatrix, [1.0, rageStretch, 1.0]);
                         mat4.translate(this.mvMatrix, this.mvMatrix, [0.0, -0.7, 0.0]);
                     }

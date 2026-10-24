@@ -2,7 +2,9 @@
 //   0 / 1 / 2        = fokus kamera ke Kuromi / Badtz-Maru / Hangyodon
 //   Drag mouse       = putar kamera,  scroll / pinch = zoom,  panah = putar kamera
 //   W A S D (Q / E)  = geser titik bidik kamera (maju/mundur/kiri/kanan, turun/naik)
-//   I H J K          = animasi karakter yang sedang difokus (lihat HUD)
+//   I H J K L M T N  = animasi karakter yang sedang difokus (lihat HUD)
+//   Badtz: J jalan rotasi, L jalan lurus, M jamur tumbuh + tersandung, T marah, N dance, I idle, R reset posisi
+//   (animasi berjalan terus sampai tombol lain ditekan; posisi terakhir dipertahankan)
 // environment.js (sudah dimuat lewat <script>) memasang diri ke context ini dan
 // menggambar langit/tanah/pohon otomatis sebelum draw pertama tiap frame.
 import { createHangyodon } from "./hangyodon/main_hangyodon.js";
@@ -51,8 +53,13 @@ chars[0].actions = [
     { key: "h", label: "Happy",  run: function (o) { o.cheer(); } }
 ];
 chars[1].actions = [
-    { key: "i", label: "Idle",   run: function (o) { o.play("idle"); } },
-    { key: "j", label: "Dance",  run: function (o) { o.play("dance"); } }
+    { key: "i", label: "Idle",          run: function (o) { o.play("idle"); } },
+    { key: "j", label: "Jalan Rotasi",  run: function (o) { o.play("walk"); } },
+    { key: "l", label: "Jalan Lurus",   run: function (o) { o.play("straight"); } },
+    { key: "m", label: "Tersandung Jamur", run: function (o) { o.play("trip"); } },
+    { key: "t", label: "Marah",         run: function (o) { o.play("rage"); } },
+    { key: "n", label: "Dance",         run: function (o) { o.play("dance"); } },
+    { key: "r", label: "Reset Posisi",  run: function (o) { o.play("reset"); } }
 ];
 chars[2].actions = [
     { key: "i", label: "Idle",   run: function (o) { o.play("idle"); } },
@@ -117,7 +124,9 @@ var buildView = function (out, ex, ey, ez, tx, ty, tz) {
 
 var updateCamera = function () {
     var a = chars[active];
-    var gx = a.x + pan[0], gy = a.y + 1.5 * a.scale + pan[1], gz = a.z + pan[2];
+    // karakter yang berpindah tempat (mis. Badtz jalan lurus) boleh memberi offset supaya kamera ikut
+    var fo = a.obj.focusOffset ? a.obj.focusOffset(a.M) : [0, 0, 0];
+    var gx = a.x + fo[0] + pan[0], gy = a.y + 1.5 * a.scale + pan[1], gz = a.z + fo[2] + pan[2];
 
     // titik bidik & jarak bergeser halus ke karakter yang dipilih
     tgt[0] += (gx - tgt[0]) * 0.12;
