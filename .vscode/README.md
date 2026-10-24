@@ -34,6 +34,9 @@ Karakter TIDAK boleh membuat canvas/kamera/loop sendiri, dan harus memanggil
 ## Kontrol
 0/1/2 fokus karakter · drag = putar kamera · scroll = zoom · WASD/QE = geser titik bidik
 I/H/J/K = animasi karakter terfokus (daftar tampil di HUD)
+Badtz-Maru (tekan 1): I idle · J jalan rotasi · L jalan lurus · M jamur tumbuh lalu tersandung & jatuh · T marah · N dance · R reset posisi
+  setiap animasi berjalan TERUS sampai tombol lain ditekan; saat berganti, posisi & arah hadap terakhir dipertahankan
+  M = sekali jalan: jamur tumbuh di depan -> jalan sedikit -> tersandung -> jatuh -> bangun -> idle
 
 ## Menambah animasi baru
 1. Tulis fungsi animasinya di file karakter (Hangyodon: tambah `evaluateXxx` + entry di `ANIMS`).
