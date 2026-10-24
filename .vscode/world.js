@@ -2,8 +2,9 @@
 //   0 / 1 / 2        = fokus kamera ke Kuromi / Badtz-Maru / Hangyodon
 //   Drag mouse       = putar kamera,  scroll / pinch = zoom,  panah = putar kamera
 //   W A S D (Q / E)  = geser titik bidik kamera (maju/mundur/kiri/kanan, turun/naik)
-//   I H J K L M T N  = animasi karakter yang sedang difokus (lihat HUD)
+//   I H J K L M T N R = animasi karakter yang sedang difokus (lihat HUD)
 //   Badtz: J jalan rotasi, L jalan lurus, M jamur tumbuh + tersandung, T marah, N dance, I idle, R reset posisi
+//   Hangyodon: I idle, H happy, J walk (toggle), K circle (toggle), L slip & dry
 //   (animasi berjalan terus sampai tombol lain ditekan; posisi terakhir dipertahankan)
 // environment.js (sudah dimuat lewat <script>) memasang diri ke context ini dan
 // menggambar langit/tanah/pohon otomatis sebelum draw pertama tiap frame.
@@ -43,6 +44,8 @@ var cam = { P: perspective(40, CANVAS.width / CANVAS.height, 1, 600), V: new Flo
 // foot = y telapak kaki di koordinat lokal karakter, scale = ukuran relatif
 // Urutan array = nomor tombol: 0 Kuromi, 1 Badtz-Maru, 2 Hangyodon
 var chars = [
+    // x, z   = posisi di dunia (satuan world; +x = kanan layar, +z = ke arah kamera/bawah layar)
+    // yawDeg = arah hadap: 0 = +z (ke kamera), 90 = +x (kanan), 180 = -z (menjauh), -90 = -x (kiri)
     { name: "Kuromi",     obj: window.createKuromi(GL, cam), x: 14, z: -20, yawDeg:  25, scale: 1.0, foot: -2.10 },
     { name: "Badtz-Maru", obj: window.createBadtz(GL, cam),  x:  3, z:   4, yawDeg:  90, scale: 1.2, foot: -2.57 },
     { name: "Hangyodon",  obj: createHangyodon(GL, cam),     x: 20, z:   6, yawDeg: 135, scale: 1.1, foot: -2.26 }
@@ -62,10 +65,11 @@ chars[1].actions = [
     { key: "r", label: "Reset Posisi",  run: function (o) { o.play("reset"); } }
 ];
 chars[2].actions = [
-    { key: "i", label: "Idle",   run: function (o) { o.play("idle"); } },
-    { key: "h", label: "Happy",  run: function (o) { o.play("happy"); } },
-    { key: "j", label: "Walk",   run: function (o) { o.play("walk"); } },
-    { key: "k", label: "Circle", run: function (o) { o.play("circle"); } }
+    { key: "i", label: "Idle",        run: function (o) { o.play("idle"); } },
+    { key: "h", label: "Happy",       run: function (o) { o.play("happy"); } },
+    { key: "j", label: "Walk",        run: function (o) { o.toggle("walk"); } },      // jalan lurus; tekan J lagi = berhenti
+    { key: "k", label: "Circle",      run: function (o) { o.toggle("circle"); } },    // jalan melingkar; tekan K lagi = berhenti
+    { key: "l", label: "Slip & Dry",  run: function (o) { o.play("slip"); } }         // terpeleset -> jatuh -> bangun -> mengeringkan badan
 ];
 chars.forEach(function (c) { c.y = 0; c.yaw = (c.yawDeg || 0) * Math.PI / 180; c.M = new Float32Array(16); });
 
@@ -124,9 +128,13 @@ var buildView = function (out, ex, ey, ez, tx, ty, tz) {
 
 var updateCamera = function () {
     var a = chars[active];
-    // karakter yang berpindah tempat (mis. Badtz jalan lurus) boleh memberi offset supaya kamera ikut
+    // Hangyodon: getPos() = posisi dunia sekarang (null sebelum frame pertama).
+    // Badtz: focusOffset(M) = offset supaya kamera ikut saat ia jalan lurus.
+    var cp0 = a.obj.getPos ? a.obj.getPos() : null;
     var fo = a.obj.focusOffset ? a.obj.focusOffset(a.M) : [0, 0, 0];
-    var gx = a.x + fo[0] + pan[0], gy = a.y + 1.5 * a.scale + pan[1], gz = a.z + fo[2] + pan[2];
+    var gx = (cp0 ? cp0[0] : a.x + fo[0]) + pan[0];
+    var gy = (cp0 ? cp0[1] : a.y) + 1.5 * a.scale + pan[1];
+    var gz = (cp0 ? cp0[2] : a.z + fo[2]) + pan[2];
 
     // titik bidik & jarak bergeser halus ke karakter yang dipilih
     tgt[0] += (gx - tgt[0]) * 0.12;
@@ -244,7 +252,7 @@ function frame(now) {
 
     // Kuromi digambar PERTAMA: ia mengirim Pmatrix/Vmatrix yang dibaca environment.js,
     // dan environment otomatis digambar tepat sebelum draw pertama ini.
-    chars.forEach(function (ch) { ch.obj.draw(ch.M, t); });
+    chars.forEach(function (ch) { ch.obj.draw(ch.M, t, ENV.groundHeight); });
 
     requestAnimationFrame(frame);
 }
