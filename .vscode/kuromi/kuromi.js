@@ -1,11 +1,17 @@
 // Kuromi sebagai "factory": window.createKuromi(GL, cam)
 // Canvas, kamera, input, dan loop ada di world.js. Environment digambar otomatis oleh environment.js.
-// Animasi (idle + cheer + walk) dihitung di sini memakai performance.now(), jadi world.js tidak perlu diubah.
+// Animasi (idle + cheer + walk + laugh + wave) dihitung di sini memakai performance.now(), jadi world.js tidak perlu diubah.
 // API:
 //   var k = window.createKuromi(GL, cam);
 //   k.cheer();          // memicu animasi senang manual
-//   k.walk(true);       // mulai jalan (k.walk() = toggle, k.walk(false) = berhenti)
-//   k.walkPath(false);  // false = jalan di tempat (tanpa berkeliling lingkaran)
+//   k.wave();           // memicu animasi idle "melambai" manual
+//   k.laugh(true);      // ketawa (k.laugh() = toggle)
+//   k.walk('line', sudut); // jalan LURUS; sudut (rad, opsional) = arah dunia: maju = (sin sudut, cos sudut)
+//   k.walk('line');     // jalan LURUS (k.walk('circle') = jalan MUTER, k.walk(false) = berhenti, k.walk() = toggle)
+//   k.walkPath(false);  // false = jalan di tempat (tanpa berpindah posisi)
+//   k.setGround(function (x, z) { return tinggiTanah; });  // deteksi tinggi tanah/map (koordinat dunia)
+//   k.getPos();         // [x, y, z] posisi dunia sekarang (null sebelum frame pertama), dipakai world.js supaya kamera mengikuti
+// Tombol (dipasang di file ini): J = jalan lurus, C = jalan muter, H = senang (cheer), K = ketawa, W = melambai
 (function () {
 
 function gridIndices(rows, cols) {
@@ -260,17 +266,17 @@ function rotationMatrix(rx, ry, rz) {
     return mul4(RZ, mul4(RY, RX));
 }
 
-// putar "child" di sekitar titik pivot (px,py,pz), di dalam ruang parent
+// ROTASI: putar "child" di sekitar titik pivot (px,py,pz), di dalam ruang parent
 function pivotRot(parent, px, py, pz, rx, ry, rz) {
     return mul4(parent, mul4(translateM(px, py, pz), mul4(rotationMatrix(rx, ry, rz), translateM(-px, -py, -pz))));
 }
 
-// skala di sekitar y = py (squash & stretch dari telapak kaki)
+// SCALING: skala di sekitar y = py (squash & stretch dari telapak kaki)
 function pivotScale(parent, sx, sy, py) {
     return mul4(parent, mul4(translateM(0, py, 0), mul4(scaleM(sx, sy, sx), translateM(0, -py, 0))));
 }
 
-// rotasi sebesar 'ang' di sekitar SUMBU SEMBARANG (ax,ay,az) - rumus Rodrigues
+// ARBITRARY ROTATE: rotasi sebesar 'ang' di sekitar SUMBU SEMBARANG (ax,ay,az) - rumus Rodrigues
 function axisAngleM(ax, ay, az, ang) {
     var l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
     var c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
@@ -282,7 +288,7 @@ function axisAngleM(ax, ay, az, ang) {
     ]);
 }
 
-// rotasi sumbu sembarang + titik pivot sembarang
+// ARBITRARY ROTATE: rotasi sumbu sembarang + titik pivot sembarang
 function pivotAxis(parent, px, py, pz, ax, ay, az, ang) {
     return mul4(parent, mul4(translateM(px, py, pz), mul4(axisAngleM(ax, ay, az, ang), translateM(-px, -py, -pz))));
 }
@@ -681,6 +687,8 @@ window.createKuromi = function (GL, cam) {
     var SQ_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.35], [0.5, 0.6], [0.6, 0.65], [0.7, 0.55], [0.8, 0.0], [0.9, -0.35], [1.1, -0.2], [1.5, -0.1], [3.2, -0.06], [4.2, 0]];
     var PITCH_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.2], [0.5, 0.36], [0.6, 0.4], [0.7, 0.35], [0.8, 0.05], [0.9, -0.1], [1.1, -0.06], [1.5, -0.05], [3.2, -0.03], [4.2, 0]];
     var ARMOUT_KEYS = [[0, 0], [0.15, 0.15], [0.35, 0.6], [0.55, 1.0], [0.68, 1.0], [0.8, 0.2], [0.9, 0]];
+    // TRANSLASI: lompatan saat "pop" (unit model). Naik cepat di c 0.75-0.95, turun pelan, mendarat di c 1.35
+    var JUMP_KEYS = [[0, 0], [0.75, 0], [0.95, 0.45], [1.15, 0.22], [1.35, 0], [4.4, 0]];
 
     // dekorasi muncul berurutan seperti di video (posisi dalam ruang model, di depan telinga)
     var DECOR = [
@@ -691,23 +699,68 @@ window.createKuromi = function (GL, cam) {
         { on: 1.75, x: 1.50, y: 4.60, z: 2.0, size: 0.46, type: 'heart', col: HEART, k: 3.1 }
     ];
 
-    // parameter jalan
-    var WALK_R = 4.0, WALK_SPEED = 1.6;   // radius lingkaran & kecepatan (unit/detik)
+    /* ---- parameter jalan ----
+       Mode 'line'   : jalan LURUS satu arah (tanpa putar balik), terus sampai J ditekan lagi (atau sampai STRAIGHT_DIST).
+         LINE_ANGLE : arah jalan. 0 = ke bawah layar / arah kamera, Math.PI/2 = ke kanan layar
+       Mode 'circle' : jalan memutar membentuk lingkaran berjari-jari CIRCLE_R.
+       Posisi terakhir (A.x, A.z) selalu disimpan, jadi setelah animasi lain dia lanjut dari titik itu. */
+    var WALK_SPEED = 1.6;                 // kecepatan (unit/detik)
+    var STRAIGHT_DIST = Infinity;         // jarak maksimum jalan lurus. Infinity = jalan terus sampai tombol J ditekan lagi
+    var LINE_ANGLE = 0;                   // arah jalan lurus: 0 = ke bawah layar (arah kamera), Math.PI = ke atas, Math.PI/2 = kanan, -Math.PI/2 = kiri
+    var TURN_SPEED = 4.0;                 // kecepatan berputar badan (rad/detik)
+    var WALK_RELATIVE_TO_CAMERA = true;   // true = arah jalan lurus mengikuti LAYAR saat J ditekan (dikunci selama jalan); false = pakai LINE_ANGLE (arah dunia)
+    var WALK_SCREEN_OFFSET = -0.25;       // relatif layar: 0 = ke bawah layar, negatif = ke kiri, positif = ke kanan (Math.PI = ke atas)
+    var CIRCLE_R = 2.2;                   // jari-jari lingkaran
+    var CIRCLE_DIR = 1;                   // 1 = satu arah putar, -1 = kebalikannya
 
+    /* ---- parameter tanah (supaya tidak melayang) ----
+       Tiap frame, posisi telapak kaki di dunia dihitung dari matriks M, lalu badan diturunkan/dinaikkan
+       sampai telapak menyentuh tanah.
+       GROUND_Y     : (tidak dipakai lagi kalau ENV.groundHeight ada) cadangan tinggi tanah
+       GROUND_LIFT  : naikkan Kuromi dari tanah (unit dunia). Kalau kaki masih tenggelam, besarkan; kalau melayang, kecilkan; boleh negatif
+       k.setGround(fn) : fn(x, z) -> tinggi tanah di titik itu, untuk map yang bergelombang (bukit, jalan, kolam) */
+    var GROUND_Y = 0;
+    var GROUND_LIFT = 0.15;
+    var groundFn = null;                  // diisi k.setGround(fn). Kalau kosong, otomatis memakai ENV.groundHeight dari environment.js
+    var getGround = function () {
+        if (groundFn) return groundFn;
+        if (window.ENV && typeof window.ENV.groundHeight === "function") {
+            return function (x, z) { return window.ENV.groundHeight(x, z); };
+        }
+        return null;
+    };
+
+    /* ---- parameter idle "melambai" ---- */
+    var WAVE_LEN = 3.6;                   // durasi total (detik)
+    var WAVE_SIDE = 1;                    // 1 = tangan di sisi +x (kanan layar), -1 = kiri layar
+    var WAVE_RATE = 2.6;                  // ayunan tangan per detik
+
+    var worldPos = null;                  // posisi dunia Kuromi sekarang (null sebelum frame pertama), dipakai kamera
     var t0 = performance.now() / 1000;
     var A = {
-        last: null, cycStart: t0,
+        last: null, cycStart: t0, nextAct: 0,           // nextAct: 0 = berikutnya cheer, 1 = berikutnya melambai (bergantian)
         cheering: false, cheerStart: 0,
+        waving: false, waveStart: 0, wavePh: 0,
         breath: 0, armPh: 0, tailPh: 0, bobPh: 0,
         happy: 0, eyeHappy: 0, earRoll: 0,
-        walking: false, followPath: true, walkAmt: 0, walkPh: 0, pathAng: 0,
-        laughing: false, laugh: 0, laughPh: 0
+        walking: false, followPath: true, walkAmt: 0, walkPh: 0,
+        x: 0, z: 0, walked: 0, myaw: 0, lineAngle: LINE_ANGLE, heading: 0,              // posisi dunia terakhir, jarak tempuh jalan lurus, arah hadap badan (rad)
+        mode: 'line', cpsi: 0, wasCircling: false,      // mode jalan: 'line' | 'circle'
+        laughing: false, laugh: 0, laughPh: 0,
+        gdy: null                                       // koreksi tinggi ke tanah (unit model), dihaluskan
     };
 
     var triggerCheer = function () {
         if (A.cheering) return;
+        A.waving = false;
         A.cheering = true;
         A.cheerStart = performance.now() / 1000;
+    };
+
+    var triggerWave = function () {
+        if (A.cheering || A.waving) return;
+        A.waving = true;
+        A.waveStart = performance.now() / 1000;
     };
 
     var update = function (now) {
@@ -715,37 +768,71 @@ window.createKuromi = function (GL, cam) {
         A.last = now;
         var damp = function (cur, target, lambda) { return cur + (target - cur) * (1 - Math.exp(-lambda * dt)); };
 
-        /* ---- saat jalan, jadwal idle/cheer otomatis ditahan ---- */
-        var finishing = A.followPath && A.pathAng > 0;   // setelah berhenti, selesaikan putaran sampai kembali ke titik awal
-        if ((A.walking || finishing || A.laughing) && !A.cheering) A.cycStart = now;
+        /* ---- saat jalan / ketawa, jadwal idle otomatis ditahan ---- */
+        if ((A.walking || A.laughing) && !A.cheering && !A.waving) A.cycStart = now;
 
-        /* ---- jadwal: idle -> cheer -> idle ---- */
-        if (!A.cheering && now - A.cycStart >= IDLE_LEN) { A.cheering = true; A.cheerStart = now; }
+        /* ---- jadwal: idle -> (cheer | melambai, bergantian) -> idle ---- */
+        if (!A.cheering && !A.waving && now - A.cycStart >= IDLE_LEN) {
+            if (A.nextAct === 0) { A.cheering = true; A.cheerStart = now; }
+            else { A.waving = true; A.waveStart = now; }
+            A.nextAct = 1 - A.nextAct;
+        }
         var c = A.cheering ? now - A.cheerStart : -1;
         if (A.cheering && c >= CHEER_LEN) { A.cheering = false; A.cycStart = now; c = -1; }
         var ti = now - A.cycStart;
+
+        /* ---- idle "melambai": envelope naik 0.45 dtk, tahan, turun 0.5 dtk ---- */
+        var wc = A.waving ? now - A.waveStart : -1;
+        if (A.waving && wc >= WAVE_LEN) { A.waving = false; A.cycStart = now; wc = -1; }
+        var wv = wc >= 0 ? smooth(wc / 0.45) * (1 - smooth((wc - (WAVE_LEN - 0.5)) / 0.5)) : 0;
+        A.wavePh += dt * 2 * Math.PI * WAVE_RATE * wv;
 
         /* ---- envelope senang ---- */
         var happyOn = (c > 0.78 && c < HAPPY_END);
         A.happy = damp(A.happy, happyOn ? 1 : 0, happyOn ? 9 : 3.2);
         /* ---- ketawa ---- */
-        A.laugh = damp(A.laugh, (A.laughing && !A.cheering) ? 1 : 0, 7);
+        A.laugh = damp(A.laugh, (A.laughing && !A.cheering && !A.waving) ? 1 : 0, 7);
         var lf = A.laugh;                               // 0 = tenang, 1 = ketawa penuh
         A.laughPh += dt * 2 * Math.PI * 4.5;            // 4.5 "ha" per detik (ubah 4.5 untuk kecepatan ketawa)
-        var eyeOn = (c > 0.95 && c < HAPPY_END) || lf > 0.3;
+        var eyeOn = (c > 0.95 && c < HAPPY_END) || lf > 0.3 || wv > 0.5;
         A.eyeHappy = damp(A.eyeHappy, eyeOn ? 1 : 0, eyeOn ? 22 : 8);
         var h = A.happy;
 
         /* ---- jalan ---- */
-        var wOn = (A.walking || finishing) && !A.cheering && !A.laughing;
+        var wOn = A.walking && !A.cheering && !A.laughing && !A.waving;
         A.walkAmt = damp(A.walkAmt, wOn ? 1 : 0, 6);
         var w = A.walkAmt;
         A.walkPh += dt * 2 * Math.PI * 1.1 * w;          // 1.1 siklus langkah / detik
-        if (A.followPath && wOn) {
-            A.pathAng += dt * w * WALK_SPEED / WALK_R;
-            if (A.pathAng >= 2 * Math.PI) {
-                A.pathAng -= 2 * Math.PI;
-                if (!A.walking) A.pathAng = 0;           // sudah berhenti: tepat kembali ke posisi awal
+
+        /* ---- jalan: LURUS (satu arah) atau MUTER (lingkaran) ----
+           Posisi (A.x, A.z) disimpan terus, jadi setelah cheer/ketawa/melambai dia lanjut dari titik terakhir.
+           Berhenti jalan -> badan berputar menghadap kamera (heading 0), posisi tetap.
+           Arah maju badan pada heading psi = (sin psi, cos psi) di bidang (x, z). */
+        var moving = wOn && A.followPath;
+
+        if (moving && A.mode === 'circle') {
+            // MUTER: arah hadap terus berputar, posisi dihitung eksak sepanjang busur
+            if (!A.wasCircling) A.cpsi = A.heading;               // mulai dari arah hadap saat ini
+            var dpsi = CIRCLE_DIR * (WALK_SPEED * w / CIRCLE_R) * dt;
+            var p2 = A.cpsi + dpsi;
+            A.x += CIRCLE_DIR * CIRCLE_R * (Math.cos(A.cpsi) - Math.cos(p2));   // TRANSLASI
+            A.z += CIRCLE_DIR * CIRCLE_R * (Math.sin(p2) - Math.sin(A.cpsi));
+            A.cpsi = p2;
+            A.heading = p2;                                        // ROTASI: badan ikut menyinggung lingkaran
+            A.wasCircling = true;
+        } else {
+            // LURUS (atau berhenti): putar badan ke arah jalan / ke kamera
+            A.wasCircling = false;
+            var wantHeading = moving ? A.lineAngle : 0;
+            var err = Math.atan2(Math.sin(wantHeading - A.heading), Math.cos(wantHeading - A.heading));
+            var maxTurn = TURN_SPEED * dt;
+            A.heading += Math.max(-maxTurn, Math.min(maxTurn, err));   // ROTASI: berputar di tempat
+            if (moving && Math.abs(err) < 0.2) {
+                var step = w * WALK_SPEED * dt;
+                A.x += step * Math.sin(A.lineAngle);                    // TRANSLASI: bergeser lurus, satu arah
+                A.z += step * Math.cos(A.lineAngle);
+                A.walked += step;
+                if (A.walked >= STRAIGHT_DIST) A.walking = false;      // sampai tujuan -> berhenti (tidak putar balik)
             }
         }
         var wStep = Math.sin(A.walkPh), wCos = Math.cos(A.walkPh);
@@ -753,36 +840,40 @@ window.createKuromi = function (GL, cam) {
         /* ---- fase kontinu ---- */
         A.breath += dt * 2 * Math.PI / 3.4;
         A.armPh += dt * 2 * Math.PI * (0.55 + 0.9 * h);
-        A.tailPh += dt * 2 * Math.PI * (0.70 + 1.2 * h + 0.8 * w + 1.5 * A.laugh);
+        A.tailPh += dt * 2 * Math.PI * (0.70 + 1.2 * h + 0.8 * w + 1.5 * A.laugh + 0.9 * wv);
         A.bobPh += dt * 1.0;
 
         var br = Math.sin(A.breath);
 
         /* ---- goyang idle ---- */
         var ia = A.cheering ? 1 - smooth(c / 0.9) : smooth(ti / 1.2);
+        ia *= 1 - 0.6 * wv;                              // saat melambai, goyang kepala dikurangi
         var ph = (((ti - SWAY_OFFSET) / SWAY_PERIOD) % 1 + 1) % 1;
         var sway = keys(ph, SWAY_KEYS) * ia;
 
         /* ---- kurva cheer ---- */
-        var sq = 0, pk = 0, ao = 0;
-        if (c >= 0) { sq = keys(c, SQ_KEYS); pk = keys(c, PITCH_KEYS); ao = keys(c, ARMOUT_KEYS); }
+        var sq = 0, pk = 0, ao = 0, jp = 0;
+        if (c >= 0) { sq = keys(c, SQ_KEYS); pk = keys(c, PITCH_KEYS); ao = keys(c, ARMOUT_KEYS); jp = keys(c, JUMP_KEYS); }
 
         var bob = Math.sin(2 * Math.PI * A.bobPh);
         var S = {
             c: c, happy: h, sq: sq, ao: ao,
-            walk: w, step: wStep, stepCos: wCos, pathAng: A.pathAng,
-            waddle: w * 0.10 * wStep,
+            walk: w, step: wStep, stepCos: wCos,
+            px: A.x, pz: A.z, heading: A.heading,
+            wave: wv, wavePh: A.wavePh,
+            waddle: w * 0.10 * wStep + wv * 0.06 * Math.sin(A.wavePh * 0.5),   // ARBITRARY ROTATE: goyang pinggul
             hop: h * 0.025 * (1 + bob) + w * 0.07 * (0.5 + 0.5 * Math.cos(2 * A.walkPh)),
-            jump: 0,
+            jump: jp,                                                          // TRANSLASI: lompatan cheer
             sy: 1 + 0.012 * br - 0.17 * sq + w * 0.02 * Math.cos(2 * A.walkPh),
             sxz: 1 - 0.006 * br + 0.10 * sq
         };
 
         /* ---- kepala ---- */
-        S.roll = -0.06 * sway + h * 0.07 * Math.sin(A.bobPh * Math.PI + 0.7) - w * 0.05 * wStep;
-        S.yaw = 0.10 * sway + h * 0.05 * Math.sin(A.bobPh * Math.PI * 0.7);
-        S.pitch = 0.025 * br + pk - 0.04 * h + w * 0.08;      // condong ke depan
-        S.headY = 0.03 * Math.sin(A.breath - 0.6) + 0.065 * sway - 0.05 * sq + h * 0.04 * bob - w * 0.03 * Math.cos(2 * A.walkPh);
+        S.roll = -0.06 * sway + h * 0.07 * Math.sin(A.bobPh * Math.PI + 0.7) - w * 0.05 * wStep - wv * 0.10 * WAVE_SIDE;
+        S.yaw = 0.10 * sway + h * 0.05 * Math.sin(A.bobPh * Math.PI * 0.7) + wv * 0.06 * WAVE_SIDE * Math.sin(A.wavePh * 0.5);
+        S.pitch = 0.025 * br + pk - 0.04 * h + w * 0.08 - wv * 0.05;      // condong ke depan
+        S.headY = 0.03 * Math.sin(A.breath - 0.6) + 0.065 * sway - 0.05 * sq + h * 0.04 * bob - w * 0.03 * Math.cos(2 * A.walkPh)
+                  + wv * 0.025 * Math.sin(A.wavePh);
 
         /* ---- ketawa: tiap "ha" badan memantul, kepala mendongak & bergoyang, badan condong ke belakang ---- */
         var lph = A.laughPh, ha = Math.sin(lph), hh = 0.5 + 0.5 * ha;
@@ -799,11 +890,11 @@ window.createKuromi = function (GL, cam) {
         // telinga: tertinggal dari gerak kepala + mengembang saat menunduk
         A.earRoll = damp(A.earRoll, S.roll, 7);
         S.earDelta = (A.earRoll - S.roll) * 2.4 + 0.05 * Math.sin(A.breath * 1.7) + 0.06 * h * Math.sin(now * 14);
-        S.earFlare = 0.06 * sq + 0.75 * Math.max(pk, 0);
+        S.earFlare = 0.06 * sq + 0.75 * Math.max(pk, 0) + 0.10 * wv * Math.max(0, Math.sin(A.wavePh));
 
         /* ---- kedip: sekali per siklus idle, garis datar ---- */
         var bp = (ti - 0.16) / 0.15;
-        var blinkO = (!A.cheering && bp > 0 && bp < 1) ? 1 - clamp01(1.7 * Math.sin(Math.PI * bp)) : 1;
+        var blinkO = (!A.cheering && !A.waving && bp > 0 && bp < 1) ? 1 - clamp01(1.7 * Math.sin(Math.PI * bp)) : 1;
         S.eyeO = Math.min(blinkO, 1 - A.eyeHappy);
         S.eyeK = 0.15 + 0.85 * A.eyeHappy;
 
@@ -814,6 +905,10 @@ window.createKuromi = function (GL, cam) {
             S.mouth = Math.max(S.mouth, lf * (0.85 + 0.55 * hh));   // mulut terbuka lebar, membesar tiap "ha"
             S.blush = Math.max(S.blush, lf);
         }
+        if (wv > 0.01) {
+            S.mouth = Math.max(S.mouth, 0.55 * wv);                 // senyum lebar saat melambai
+            S.blush = Math.max(S.blush, 0.8 * wv);
+        }
         return S;
     };
 
@@ -821,14 +916,27 @@ window.createKuromi = function (GL, cam) {
     // M = model matrix (posisi + arah hadap + skala), disusun oleh world.js
     var render = function (M) {
         var now = performance.now() / 1000;
+        A.myaw = Math.atan2(M[8], M[10]);              // yaw M dari world.js (yawDeg karakter)
         var S = update(now);
         var h = S.happy;
 
-        // translasi + rotasi hadap: berjalan mengelilingi lingkaran, menghadap arah gerak
-        // (lingkaran melewati posisi awal; pathAng = 0 berarti persis di posisi & arah hadap semula)
-        if (A.followPath && S.pathAng !== 0) {
-            M = pivotRot(M, WALK_R, 0, 0, 0, S.pathAng, 0);
-        }
+        // ---- DETEKSI TANAH: hitung posisi telapak kaki di dunia, lalu tempelkan ke tinggi tanah ----
+        var fx = S.px, fy = FEET_Y, fz = S.pz;
+        var fwx = M[0] * fx + M[4] * fy + M[8] * fz + M[12];
+        var fwy = M[1] * fx + M[5] * fy + M[9] * fz + M[13];
+        var fwz = M[2] * fx + M[6] * fy + M[10] * fz + M[14];
+        var gfn = getGround();
+        var gy = gfn ? gfn(fwx, fwz) : fwy;   // tanpa data tanah: tidak ada koreksi (pakai penempatan dari world.js)
+        if (typeof gy !== "number" || !isFinite(gy)) gy = fwy;
+        var sY = Math.hypot(M[4], M[5], M[6]) || 1;                 // skala vertikal model
+        var dy = (gy + GROUND_LIFT - fwy) / sY;                     // koreksi dalam unit model
+        A.gdy = (A.gdy === null) ? dy : A.gdy + (dy - A.gdy) * 0.3; // dihaluskan supaya tidak patah di tanah miring
+        M = mul4(M, translateM(0, A.gdy, 0));                       // TRANSLASI: turun sampai menapak
+
+        // HIERARCHY level atas: M (world) -> translasi ke posisi terakhir (px, pz) -> rotasi hadap -> root badan
+        // TRANSLASI murni (px, pz) + ROTASI di sumbu Y (heading)
+        M = mul4(M, mul4(translateM(S.px, 0, S.pz), rotationMatrix(0, S.heading, 0)));
+        worldPos = [M[12], M[13], M[14]];                       // posisi dunia (sudah termasuk hasil jalan + tinggi tanah)
 
         GL.useProgram(SHADER_PROGRAM);
         for (var a = 0; a < 8; a++) GL.disableVertexAttribArray(a);
@@ -844,11 +952,11 @@ window.createKuromi = function (GL, cam) {
         GL.bindTexture(GL.TEXTURE_2D, skullTex);
         GL.uniform1i(_uTex, 0);
 
-        // ---- matriks root: translasi hop, goyang pinggul (sumbu sembarang), squash/stretch dari telapak kaki ----
-        var root0 = mul4(M, translateM(0, S.hop + S.jump, 0));
-        root0 = pivotAxis(root0, 0, FEET_Y, 0, 0.15, 1, 0.35, S.waddle);   // arbitrary rotate
-        root0 = pivotAxis(root0, 0, -1.2, 0, 1, 0.15, 0.3, S.lean);        // arbitrary rotate: condong saat ketawa
-        var root = pivotScale(root0, S.sxz, S.sy, FEET_Y);
+        // ---- matriks root: translasi hop/jump, goyang pinggul (sumbu sembarang), squash/stretch dari telapak kaki ----
+        var root0 = mul4(M, translateM(0, S.hop + S.jump, 0));                 // TRANSLASI
+        root0 = pivotAxis(root0, 0, FEET_Y, 0, 0.15, 1, 0.35, S.waddle);       // ARBITRARY ROTATE: goyang pinggul
+        root0 = pivotAxis(root0, 0, -1.2, 0, 1, 0.15, 0.3, S.lean);            // ARBITRARY ROTATE: condong saat ketawa
+        var root = pivotScale(root0, S.sxz, S.sy, FEET_Y);                     // SCALING
 
         /* ===== BADAN ===== */
         setM(root);
@@ -868,7 +976,8 @@ window.createKuromi = function (GL, cam) {
 
         /* ===== LENGAN (pivot di bahu) =====
            idle: tangan terlipat dekat dada | membungkuk: melebar ke samping | senang: merapat ke dada
-           jalan: berayun berlawanan dengan kaki satu sisi */
+           jalan: berayun berlawanan dengan kaki satu sisi
+           melambai: lengan WAVE_SIDE terangkat ke samping-atas, lalu diayun kiri-kanan */
         for (var si = 0; si < 2; si++) {
             var side = si === 0 ? -1 : 1;
             var swing = Math.sin(A.armPh + (side > 0 ? 0 : 1.1));
@@ -877,6 +986,14 @@ window.createKuromi = function (GL, cam) {
                      - S.laugh * (0.75 - 0.15 * S.ha);                 // tangan memegang perut & bergetar
             var ry = -side * (0.10 * (1 - h) + 0.42 * h + 0.30 * S.laugh);
             var rz = side * ((0.08 + 0.05 * swing + 0.60 * S.ao) * (1 - h));
+
+            var wvS = (side === WAVE_SIDE) ? S.wave : 0;               // hanya satu tangan yang melambai
+            if (wvS > 0.001) {
+                rx = rx * (1 - wvS) + (-0.45) * wvS;                   // sedikit ke depan supaya tidak tertutup kepala
+                ry = ry * (1 - wvS);
+                rz = rz * (1 - wvS) + side * (2.3 + 0.32 * Math.sin(S.wavePh)) * wvS;   // ROTASI: terangkat + diayun
+            }
+
             setM(pivotRot(root, side * 0.95, -0.05, 0.2, rx, ry, rz));
             draw(sphere, [side * 1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, -side * 0.2]);
             draw(sphere, [side * 1.17, -0.90, 0.30], [0.34, 0.40, 0.34], WHITE);
@@ -887,7 +1004,7 @@ window.createKuromi = function (GL, cam) {
         setM(pivotRot(root, 0.30, -1.10, -0.60, 0, 0.25 * wag * (1 + h), 0.08 * Math.sin(A.tailPh * 0.5 + 1) + 0.15 * Math.max(S.sq, 0)));
         drawTail();
 
-        /* ===== KEPALA (pivot di leher) ===== */
+        /* ===== KEPALA (pivot di leher) - HIERARCHY: telinga, mata, mulut, pipi ikut matriks kepala ===== */
         var head = pivotRot(mul4(root, translateM(0, S.headY, 0)), NECK[0], NECK[1], NECK[2], S.pitch, S.yaw, S.roll);
         setM(head);
 
@@ -958,21 +1075,58 @@ window.createKuromi = function (GL, cam) {
         setM(M); // kembalikan supaya environment tidak terpengaruh
     };
 
-    // Tombol J = jalan (Walk), L = ketawa (Laugh), H = senang (Happy/cheer). Tidak perlu mengubah world.js
+    // mulai / hentikan jalan. Menekan tombol mode yang sama = berhenti, mode lain = ganti mode sambil lanjut dari posisi terakhir
+    // angle (opsional, rad): arah jalan lurus yang dikunci saat mulai jalan. Tanpa angle dipakai LINE_ANGLE / arah terakhir.
+    // Toggle yang terpanggil 2x dalam hitungan milidetik (mis. tombol yang sama juga dipasang di world.js) dianggap satu kali,
+    // supaya tidak saling membatalkan (hidup lalu langsung mati).
+    var lastToggle = {};
+    var onceFast = function (name) {
+        var n = performance.now();
+        if (lastToggle[name] !== undefined && n - lastToggle[name] < 120) return false;
+        lastToggle[name] = n;
+        return true;
+    };
+    var toggleLaugh = function () { if (onceFast("laugh")) A.laughing = !A.laughing; };
+
+    var toggleWalk = function (mode, angle) {
+        if (!onceFast("walk:" + mode)) return;
+        if (A.walking && A.mode === mode) { A.walking = false; return; }
+        if (typeof angle !== "number" && mode === 'line' && WALK_RELATIVE_TO_CAMERA) {
+            // yaw kamera dibaca dari matriks view: V[0] = cos(yaw), V[8] = -sin(yaw)
+            // dikurangi yaw dari M (arah hadap awal Kuromi di world.js), karena gerakan dihitung di ruang model
+            angle = Math.atan2(-cam.V[8], cam.V[0]) + WALK_SCREEN_OFFSET - A.myaw;
+        }
+        if (typeof angle === "number") A.lineAngle = angle;
+        A.mode = mode;
+        A.walked = 0;
+        A.walking = true;
+    };
+
+    // Tombol J = jalan lurus, C = jalan muter, H = senang (cheer), K = ketawa, W = melambai. Tidak perlu mengubah world.js
     document.addEventListener("keydown", function (e) {
         var tg = e.target && e.target.tagName;
-        if (tg === "INPUT" || tg === "TEXTAREA" || e.ctrlKey || e.metaKey || e.altKey) return;
+        if (tg === "INPUT" || tg === "TEXTAREA" || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
         var k = (e.key || "").toLowerCase();
-        if (k === "j") A.walking = !A.walking;
+        if (k === "j") toggleWalk('line');
+        else if (k === "c") toggleWalk('circle');
         else if (k === "h") triggerCheer();
-        else if (k === "l") A.laughing = !A.laughing;
+        else if (k === "k") toggleLaugh();
+        else if (k === "v") triggerWave();
     });
 
     return {
         draw: render,
         cheer: triggerCheer,
-        laugh: function (on) { A.laughing = (on === undefined) ? !A.laughing : !!on; },
-        walk: function (on) { A.walking = (on === undefined) ? !A.walking : !!on; },
+        wave: triggerWave,
+        laugh: function (on) { if (on === undefined) toggleLaugh(); else A.laughing = !!on; },
+        walk: function (m, angle) {
+            if (m === 'line' || m === 'circle') toggleWalk(m, angle);
+            else if (m === undefined) toggleWalk(A.mode);
+            else if (m) { if (!A.walking) { A.walked = 0; A.walking = true; } } else A.walking = false;
+        },
+        pos: function () { return [A.x, A.z]; },
+        getPos: function () { return worldPos; },   // posisi dunia karakter sekarang (kamera mengikuti), sama seperti Hangyodon
+        setGround: function (fn) { groundFn = (typeof fn === "function") ? fn : null; A.gdy = null; },
         walkPath: function (on) { A.followPath = !!on; }   // false = jalan di tempat
     };
 

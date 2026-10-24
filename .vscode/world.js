@@ -53,7 +53,11 @@ var chars = [
 
 // Aksi per karakter: key -> fungsi. Tambah animasi baru cukup menambah satu baris di sini.
 chars[0].actions = [
-    { key: "h", label: "Happy",  run: function (o) { o.cheer(); } }
+    { key: "j", label: "Walk",   run: function (o) { o.toggle("walk"); } },      // jalan lurus; tekan J lagi = berhenti
+    { key: "c", label: "Circle", run: function (o) { o.toggle("circle"); } },    // jalan melingkar; tekan K lagi = berhenti
+    { key: "h", label: "Happy",  run: function (o) { o.cheer(); } },
+    { key: "k", label: "Laugh",  run: function (o) { o.laugh(); } },
+    { key: "v", label: "Wave",   run: function (o) { o.wave(); } }
 ];
 chars[1].actions = [
     { key: "i", label: "Idle",          run: function (o) { o.play("idle"); } },
