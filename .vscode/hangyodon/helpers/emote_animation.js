@@ -19,7 +19,7 @@ var HEAD_AXIS = [0.1, 1.0, 0.16];            // sama dengan idle: sumbu putar ke
 function bop(x) { return Math.tanh(1.8 * Math.sin(x)) / Math.tanh(1.8); }
 
 // gerak sekunder (jambul, sirip, telinga, ekor, gurita + tentakel) yang menyusul gerak kepala
-function secondary(out, t, w, f, amp) {
+export function secondary(out, t, w, f, amp) {
     var ph = function (p) { return TAU * f * t + p; };
     out.crestBig = { euler: [0, 0, 0.07 * amp * Math.sin(ph(-1.0)) * w] };
     out.crestSmall = { euler: [0, 0, 0.10 * amp * Math.sin(ph(-1.4)) * w] };
@@ -138,8 +138,11 @@ export function evaluateHappy(t, w) {
 //    (bukan duduk): kaki bergantian terangkat, lengan berayun berlawanan dengan kaki.
 // =====================================================================
 export var WALK_PERIOD = 0.8;
-export var CIRCLE_RADIUS = 1.6;              // jari-jari lingkaran orbit
+export var WALK_SPEED = 1.6;                 // kecepatan jalan LURUS (unit model / detik). 0 = jalan di tempat
+export var CIRCLE_RADIUS = 1.6;              // jari-jari lingkaran
 export var CIRCLE_PERIOD = 10.0;             // detik untuk 1 putaran penuh
+export var CIRCLE_TURN = TAU / CIRCLE_PERIOD;            // laju belok (rad/detik)
+export var CIRCLE_SPEED = CIRCLE_TURN * CIRCLE_RADIUS;   // kecepatan maju di lingkaran
 
 function walkPose(t, w) {
     var out = {};
@@ -192,18 +195,12 @@ export function evaluateWalk(t, w) {
     return walkPose(t, w);
 }
 
-// Berjalan MELINGKAR: tubuh berputar di SUMBU SEMBARANG = sumbu vertikal yang melewati titik pusat C
-// (bukan sumbu badan sendiri), seperti planet mengelilingi matahari.
-//   R_axis(theta) di sekitar C  ==  rotasi di sekitar pivot badan + translasi (C - R*C)
-// Lingkaran dipusatkan di titik (0,0,0) dunia supaya karakter tetap di tengah layar.
+// Berjalan MELINGKAR: gerak badan (posisi + arah hadap) TIDAK dihitung di sini lagi, tapi di "pose"
+// main_hangyodon.js (lihat ANIMS.circle.move): tiap frame arah hadap diputar di sumbu Y (Rodrigues)
+// dan posisi maju menurut arah hadap -> lintasan lingkaran mulai dari tempat ia berdiri sekarang.
+// Supaya posisi TIDAK balik ke titik awal saat pindah animasi. Di sini hanya pose tubuh: jalan + condong ke pusat.
 export function evaluateWalkCircle(t, w) {
     var out = walkPose(t, w);
-    var theta = TAU * t / CIRCLE_PERIOD;
-    theta = Math.atan2(Math.sin(theta), Math.cos(theta)) * w;     // dibungkus (-PI,PI] lalu x bobot: kembali ke depan saat stop
-    var r = CIRCLE_RADIUS * w;
-    var body = out.body;
-    body.axis = { axis: [0, 1, 0], angle: theta };                // Rotate Arbitrary Axis: arah hadap mengikuti garis singgung
-    body.euler[2] += -0.06 * w;                                   // sedikit condong ke pusat lingkaran
-    body.pos = [-r * Math.cos(theta), body.pos[1], r * Math.sin(theta)];   // posisi di lingkaran = -Ry(theta) * C, C = (R,0,0)
+    out.body.euler[2] += -0.06 * w;                               // sedikit condong ke pusat lingkaran
     return out;
 }

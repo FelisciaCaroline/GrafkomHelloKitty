@@ -1,7 +1,8 @@
 import * as builder from "./helpers/builders.js";
-import { animMatrix, normalMatrix } from "./helpers/transform.js";
+import { animMatrix, normalMatrix, translationM, axisAngleM } from "./helpers/transform.js";
 import { evaluateIdle } from "./helpers/idle_animation.js";
-import { evaluateHappy, evaluateWalk, evaluateWalkCircle } from "./helpers/emote_animation.js";
+import { evaluateHappy, evaluateWalk, evaluateWalkCircle, WALK_SPEED, CIRCLE_SPEED, CIRCLE_TURN } from "./helpers/emote_animation.js";
+import { evaluateSlip, slipMove, SLIP_DURATION, DROP_COUNT } from "./helpers/slip_animation.js";
 import { generateHeart, generateSparkle } from "./helpers/effects.js";
 
 // =====================================================================
@@ -27,6 +28,7 @@ var COLOR = {
   pinkDark: hex("#e393b2"),   // bibir bawah
   patch:    hex("#d9a6c2"),   // bercak pink wajah gurita
   heart: hex("#ff3b5c"),   // hati (happy emote)
+  water: hex("#8fe0ff"),   // percikan air (animasi mengeringkan badan)
   spark: [1.5, 1.4, 1.0],  // kilau bintang (happy emote); sengaja >1 supaya tampak berpendar
 };
 
@@ -397,6 +399,30 @@ export function createHangyodon(GL, cam) {
     PARTS["happyEye" + L].hiddenDefault = true;
   });
 
+    // ---------------- MATA MERINGIS > < (dipakai Slip: terpeleset & mengibas kering; tersembunyi saat tidak dianimasikan) ----------------
+  // dir = +1 -> ujung ">" menghadap +X (mata kiri layar), dir = -1 -> "<" (mata kanan layar): ujung selalu menghadap tengah wajah.
+  // Jalur: lengan atas -> sudut membulat (bezier kuadrat) -> lengan bawah, lalu dilengkungkan mengikuti bola mata.
+  function painEyeArc(dir) {
+    var A = [-0.2 * dir, 0.10], V = [0.2 * dir, -0.05], B = [-0.2 * dir, -0.20];     // ujung atas, sudut, ujung bawah
+    var C1 = [V[0] + (A[0] - V[0]) * 0.18, V[1] + (A[1] - V[1]) * 0.18];            // awal pembulatan sudut
+    var C2 = [V[0] + (B[0] - V[0]) * 0.18, V[1] + (B[1] - V[1]) * 0.18];            // akhir pembulatan sudut
+    return function (t) {
+      var x, y;
+      if (t < 0.45) { var u = t / 0.45; x = A[0] + (C1[0] - A[0]) * u; y = A[1] + (C1[1] - A[1]) * u; }
+      else if (t < 0.55) {
+        var q = (t - 0.45) / 0.1, a = (1 - q) * (1 - q), b = 2 * (1 - q) * q, c = q * q;
+        x = a * C1[0] + b * V[0] + c * C2[0]; y = a * C1[1] + b * V[1] + c * C2[1];
+      } else { var w = (t - 0.55) / 0.45; x = C2[0] + (B[0] - C2[0]) * w; y = C2[1] + (B[1] - C2[1]) * w; }
+      var z = 0.36 * Math.sqrt(Math.max(0, 1 - Math.pow(x / 0.5, 2) - Math.pow(y / 0.52, 2))) + 0.03;   // ikut lengkung bola mata
+      return [x, y, z];
+    };
+  }
+  [-1, 1].forEach(function (s) {
+    var L = s < 0 ? "L" : "R";
+    part("painEye" + L, "eye" + L, builder.generateTube(painEyeArc(-s), 0.06, 40, 10, COLOR.black), [0, 0, 0]);
+    PARTS["painEye" + L].hiddenDefault = true;
+  });
+
   // ---------------- EFEK HAPPY EMOTE: 1 hati besar, 3 hati kecil, 6 kilau (anak dari kepala) ----------------
   part("heartBig", "head", generateHeart(0.5, 0.2, 12, 48, COLOR.heart), [0.05, 2.2, -0.3]);
   PARTS.heartBig.hiddenDefault = true;
@@ -408,6 +434,12 @@ export function createHangyodon(GL, cam) {
     part("spark" + i, "head", generateSparkle(0.32, 0.07, COLOR.spark), p);
     PARTS["spark" + i].hiddenDefault = true;
   });
+
+  // ---------------- EFEK PERCIKAN AIR (slip & dry): bola lonjong kecil, anak dari badan ----------------
+  for (var di = 0; di < DROP_COUNT; di++) {
+    part("drop" + di, "body", builder.generateEllipsoid(0.1, 0.1, 0.1, 10, 14, COLOR.water), [0, 0, 0]);
+    PARTS["drop" + di].hiddenDefault = true;
+  }
 
   /*========================= HIERARCHY: world matrix dihitung TIAP FRAME =========================
     world = parentWorld * (A_anim * local), A_anim = animasi di sekitar pivot (kosong kalau tidak ada animasi).
@@ -437,36 +469,86 @@ export function createHangyodon(GL, cam) {
   /*========================= DRAW =========================*/
   var STRIDE = 4 * 9;
 
-  /*========================= STATE ANIMASI (Idle + 3 emote) =========================
-    Hanya 1 animasi aktif pada satu waktu. Menekan tombol lain = animasi lama fade-out dulu, lalu yang baru fade-in. */
+  /*========================= STATE ANIMASI =========================
+    Hanya 1 animasi aktif pada satu waktu. Ganti animasi = yang lama fade-out dulu, lalu yang baru fade-in.
+    Mulai otomatis di IDLE.
+
+    Tiap animasi bisa punya:
+      evaluate(t, w)  -> delta tiap part (pose tubuh)
+      move(t)         -> { v: kecepatan maju, turn: laju belok, k: seberapa cepat mengejar target }  (opsional)
+      instant         -> true = langsung mulai tanpa fade-out animasi lama (dipakai slip supaya spontan)
+      duration, next  -> animasi sekali-jalan: setelah `duration` detik otomatis pindah ke `next` */
   var ANIMS = {
-    idle:   { evaluate: evaluateIdle,       btn: "idleBtn",   key: "i", on: "■ Stop idle",   off: "▶ Idle" },
-    happy:  { evaluate: evaluateHappy,      btn: "happyBtn",  key: "h", on: "■ Stop happy",  off: "♥ Happy" },
-    walk:   { evaluate: evaluateWalk,       btn: "walkBtn",   key: "w", on: "■ Stop walk",   off: "▶ Walk" },
-    circle: { evaluate: evaluateWalkCircle, btn: "circleBtn", key: "c", on: "■ Stop circle", off: "⟳ Circle" }
+    idle:   { evaluate: evaluateIdle },
+    happy:  { evaluate: evaluateHappy },
+    walk:   { evaluate: evaluateWalk,       move: function () { return { v: WALK_SPEED }; } },                     // jalan LURUS (translasi)
+    circle: { evaluate: evaluateWalkCircle, move: function () { return { v: CIRCLE_SPEED, turn: CIRCLE_TURN }; } },   // jalan melingkar
+    slip:   { evaluate: evaluateSlip, move: slipMove, instant: true, duration: SLIP_DURATION, next: "idle" }          // terpeleset -> jatuh -> bangun -> mengeringkan badan
   };
-  var anim = { current: null, requested: null, weight: 0, time: 0 };
-  function setAnim(name) {                       // name = "idle" | "happy" | "walk" | "circle" | null
-    anim.requested = (name && anim.requested !== name) ? name : null;   // tekan lagi = stop
-  }
+  var anim = { current: "idle", requested: "idle", weight: 1, time: 0 };
+
+  function setAnim(name) { anim.requested = name || "idle"; }
+  function toggleAnim(name) { anim.requested = (anim.requested === name) ? "idle" : name; }   // tekan lagi = berhenti (kembali idle)
+
+  /*========================= POSE: POSISI & ARAH HADAP YANG TERSIMPAN =========================
+    Posisi (x, z) dan arah hadap (yaw) disimpan DI SINI, bukan di dalam animasi. Jadi pindah animasi
+    (mis. sedang jalan melingkar lalu tekan Happy) = berhenti tepat di tempat itu, tidak balik ke titik awal.
+    Koordinat pose = ruang model dari matriks M milik world.js (spawn = titik awal karakter). */
+  var pose = { x: 0, z: 0, yaw: 0, speed: 0, turn: 0 };
+  var worldPos = null;
 
   var lastT = null;
 
   // M = model matrix dunia (translasi * rotasi Y * skala) dari world.js, t = detik
-  function draw(M, t) {
+  // groundAt(x, z) = tinggi tanah dunia (opsional, ENV.groundHeight) supaya karakter mengikuti kontur tanah
+  function draw(M, t, groundAt) {
     var dt = lastT === null ? 0 : Math.min(Math.max(t - lastT, 0), 0.1);
     lastT = t;
 
-    if (anim.current !== anim.requested) {          // ganti animasi / stop: fade-out dulu
-      anim.weight += (0 - anim.weight) * (1 - Math.exp(-dt * 9));
-      if (anim.weight < 0.02) { anim.weight = 0; anim.current = anim.requested; anim.time = 0; }
-    } else {                                        // animasi yang sama: fade-in (atau tetap 0 kalau null)
-      anim.weight += ((anim.current ? 1 : 0) - anim.weight) * (1 - Math.exp(-dt * 5));
+    // animasi sekali-jalan selesai -> lanjut ke animasi berikutnya (idle)
+    var cur = anim.current ? ANIMS[anim.current] : null;
+    if (cur && cur.duration && anim.current === anim.requested && anim.time >= cur.duration) anim.requested = cur.next || "idle";
+
+    if (anim.current !== anim.requested) {
+      var nxt = ANIMS[anim.requested];
+      if (nxt && nxt.instant) {                     // langsung ganti, tanpa fade
+        anim.current = anim.requested; anim.weight = 1; anim.time = 0;
+      } else {                                      // fade-out dulu
+        anim.weight += (0 - anim.weight) * (1 - Math.exp(-dt * 9));
+        if (anim.weight < 0.02) { anim.weight = 0; anim.current = anim.requested; anim.time = 0; }
+      }
+    } else {                                        // animasi yang sama: fade-in
+      anim.weight += (1 - anim.weight) * (1 - Math.exp(-dt * 5));
     }
     if (anim.current) anim.time += dt;
 
-    var deltas = (anim.current && anim.weight > 0) ? ANIMS[anim.current].evaluate(anim.time, anim.weight) : {};
+    var def = anim.current ? ANIMS[anim.current] : null;
+    var deltas = (def && anim.weight > 0) ? def.evaluate(anim.time, anim.weight) : {};
     updateWorld(deltas);
+
+    // ---- gerak badan: integrasi kecepatan -> posisi & arah hadap ----
+    // sedang transisi / animasi tanpa move() => berhenti SEKETIKA di tempat (k sangat besar)
+    var mv = (def && def.move && anim.current === anim.requested) ? def.move(anim.time) : null;
+    var tv = mv ? (mv.v || 0) : 0, tw = mv ? (mv.turn || 0) : 0, kk = mv ? (mv.k || 8) : 1e9;
+    var ak = 1 - Math.exp(-kk * dt);
+    pose.speed += (tv - pose.speed) * ak;
+    pose.turn  += (tw - pose.turn) * ak;
+    pose.yaw += pose.turn * dt;
+    pose.x += Math.sin(pose.yaw) * pose.speed * dt;     // maju = searah hadap (lokal +Z diputar yaw)
+    pose.z += Math.cos(pose.yaw) * pose.speed * dt;
+
+    // ---- ikuti kontur tanah di posisi baru ----
+    var dy = 0;
+    if (groundAt) {
+      var wx = M[0] * pose.x + M[8] * pose.z + M[12];
+      var wz = M[2] * pose.x + M[10] * pose.z + M[14];
+      var sc = Math.hypot(M[4], M[5], M[6]) || 1;
+      dy = (groundAt(wx, wz) - groundAt(M[12], M[14])) / sc;
+    }
+
+    // Mroot = M * Translate(pose) * RotateY(yaw)   (RotateY lewat Rodrigues = rotasi sumbu sembarang [0,1,0])
+    var Mroot = mul(M, mul(translationM([pose.x, dy, pose.z]), axisAngleM([0, 1, 0], pose.yaw)));
+    worldPos = [Mroot[12], Mroot[13], Mroot[14]];
 
     // Context dipakai bersama: set ulang program & attribute milik Hangyodon tiap draw
     GL.useProgram(PROG);
@@ -480,8 +562,8 @@ export function createHangyodon(GL, cam) {
     ORDER.forEach(function (name) {
       var p = PARTS[name];
       var d = deltas[name];
-      if (d ? d.hidden : p.hiddenDefault) return;           // kelopak: hanya tampil saat kedip
-      var Mp = mul(M, p.world);                              // world karakter * hierarki bagian
+      if (d ? d.hidden : p.hiddenDefault) return;           // kelopak/efek: hanya tampil saat dipakai animasi
+      var Mp = mul(Mroot, p.world);                          // world karakter * hierarki bagian
       GL.uniformMatrix4fv(_Mmatrix, false, Mp);
       GL.uniformMatrix3fv(_Nmatrix, false, normalMatrix(Mp));
       GL.bindBuffer(GL.ARRAY_BUFFER, p.VBO);
@@ -493,12 +575,14 @@ export function createHangyodon(GL, cam) {
     });
   }
 
-  // Dipakai world.js: obj.draw(M, t) + kontrol animasi
+  // Dipakai world.js: obj.draw(M, t, groundAt) + kontrol animasi
   return {
     draw: draw,
-    animations: ["idle", "happy", "walk", "circle"],
-    play: function (name) { if (anim.requested !== name) setAnim(name); },   // "idle" | "happy" | "walk" | "circle"
-    stop: function () { setAnim(null); },
-    current: function () { return anim.requested; }
+    animations: ["idle", "happy", "walk", "circle", "slip"],
+    play: function (name) { setAnim(name); },            // "idle" | "happy" | "walk" | "circle" | "slip"
+    toggle: function (name) { toggleAnim(name); },       // tekan lagi = kembali idle
+    stop: function () { setAnim("idle"); },
+    current: function () { return anim.requested; },
+    getPos: function () { return worldPos; }             // posisi dunia karakter sekarang (kamera mengikuti)
   };
 }
