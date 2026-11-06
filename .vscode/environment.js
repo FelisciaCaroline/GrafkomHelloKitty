@@ -2,7 +2,7 @@
    environment.js  -  360° WebGL world, "cozy storybook valley" style
 
    Matches the reference: pink scalloped-canopy trees on thick trunks,
-   terraced mossy stone-brick cliffs, waterfalls, a turquoise pond,
+   terraced mossy stone-brick cliffs, a turquoise pond,
    bright meadow, tulip beds, a crop plot, stacked rocks, curly vines,
    puffy clouds on a saturated blue sky.
 
@@ -195,11 +195,11 @@ function createEnvironment(GL) {
 
     /* ----------------------------- shaders ----------------------------- */
     // uMode: 0 lit | 1 terrain | 2 sky | 3 flat colour | 4 blob shadow
-    //        5 waterfall | 6 pond water | 9 lit + trunk stripes
+    //        6 pond water (flat colour)
     var VS = [
         "attribute vec3 position;",
         "attribute vec3 normal;",
-        "attribute float aShade;",          // baked light (terrain) / flow coord (waterfall); constant 1 elsewhere
+        "attribute float aShade;",          // baked light (terrain) / unused (flat); constant 1 elsewhere
         "uniform mat4 Pmatrix, Vmatrix;",
         "uniform vec3 uOffset, uScale;",
         "uniform mat4 uLocalRotation;",
@@ -275,34 +275,8 @@ function createEnvironment(GL) {
         "        gl_FragColor = vec4(0.16, 0.18, 0.42, a);",
         "        return;",
         "    }",
-        /* ---- pond water ---- */
-        "    if (mode > 5.5 && mode < 6.5) {",
-        "        vec2 p = vWorld.xz;",
-        "        vec3 N = normalize(vec3(0.07 * sin(p.x * 1.7 + uTime * 1.3) + 0.04 * sin(p.y * 3.1 - uTime * 1.9), 1.0,",
-        "                                0.07 * sin(p.y * 1.5 - uTime * 1.1) + 0.04 * sin(p.x * 2.9 + uTime * 1.7)));",
-        "        float d = length(p - POND);",
-        "        vec3 col = mix(vec3(0.07, 0.60, 0.72), vec3(0.44, 0.91, 0.88), smoothstep(2.5, 8.0, d));",
-        "        float ring = smoothstep(0.90, 1.0, sin((d - uTime * 0.35) * 3.2)) * 0.14 * smoothstep(4.5, 8.0, d);",
-        "        col += vec3(ring);",
-        "        float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);",
-        "        col = mix(col, vec3(0.78, 0.92, 1.0), fres * 0.5);",
-        "        vec3 H = normalize(uLight + V);",
-        "        col += vec3(1.0, 0.97, 0.88) * pow(max(dot(N, H), 0.0), 110.0) * 0.9;",
-        "        gl_FragColor = vec4(fogged(col), 1.0);",
-        "        return;",
-        "    }",
-        /* ---- waterfall ---- */
-        "    if (mode > 4.5 && mode < 5.5) {",
-        "        float w1 = sin(vWorld.x * 3.0 + vWorld.z * 2.4 + vShade * 0.9 - uTime * 3.5) * 0.5 + 0.5;",
-        "        float w2 = sin(vShade * 1.7 - uTime * 2.8 + sin(vWorld.x * 1.7 + vWorld.z * 1.3) * 1.6) * 0.5 + 0.5;",
-        "        vec3 c = mix(vec3(0.52, 0.85, 0.97), vec3(0.97, 1.0, 1.0), smoothstep(0.35, 0.95, w1 * 0.45 + w2 * 0.65));",
-        "        float nd = dot(normalize(vWN), uLight) * 0.5 + 0.5;",
-        "        c *= 0.80 + 0.24 * nd;",
-        "        float rim = pow(1.0 - max(dot(normalize(vWN), V), 0.0), 3.0);",
-        "        c += vec3(0.10) * rim;",
-        "        gl_FragColor = vec4(fogged(c), 1.0);",
-        "        return;",
-        "    }",
+        /* ---- pond water: single flat colour ---- */
+        "    if (mode > 5.5 && mode < 6.5) { gl_FragColor = vec4(fogged(uColor), 1.0); return; }",
         /* ---- surfaces with lighting ---- */
         "    vec3 N = normalize(vWN);",
         "    vec3 base = uColor;",
@@ -342,10 +316,6 @@ function createEnvironment(GL) {
         "        float sand = (1.0 - smoothstep(-1.15, -0.95, vWorld.y)) * (1.0 - smoothstep(9.0, 11.0, length(p - POND)));",
         "        base = mix(base, vec3(0.95, 0.87, 0.62), sand * (1.0 - stone));",
         "    } else {",
-        "        if (mode > 8.5) {",
-        "            float ang = atan(vLocal.z, vLocal.x);",
-        "            base *= 0.86 + 0.14 * sin(ang * 13.0);",
-        "        }",
         "        if (uAO.y > 0.0) {",
         "            float a = smoothstep(0.0, 1.0, clamp((vWorld.y - uAO.x) * uAO.y, 0.0, 1.0));",
         "            base *= mix(vec3(0.78, 0.66, 0.86), vec3(1.0), a);",   // cool purple-ish occlusion
@@ -358,7 +328,7 @@ function createEnvironment(GL) {
         "    float sh = vShade;",
         "    vec3 light = amb * 0.62 * (0.68 + 0.32 * sh) + vec3(1.0, 0.95, 0.84) * 0.62 * ramp * sh;",
         "    vec3 col = base * light * 1.10;",
-        "    if (mode < 0.5 || mode > 8.5) {",
+        "    if (mode < 0.5) {",
         "        vec3 H = normalize(uLight + V);",
         "        col += vec3(0.16) * pow(max(dot(N, H), 0.0), 40.0) * ramp * sh;",
         "        col += vec3(1.0, 0.9, 1.0) * pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.14 * (0.4 + 0.6 * hemi);",
@@ -463,9 +433,8 @@ function createEnvironment(GL) {
 
     // terraces (stone-brick cliffs): centre radius wobbles with angle
     var RINGS = [
-        { C: 32, a1: 3.2, k1: 3, p1: 0.4, a2: 1.6, k2: 5, p2: 1.0, w: 4.6, R: 4.6 },
-        { C: 54, a1: 3.6, k1: 2, p1: 2.2, a2: 1.8, k2: 4, p2: 0.3, w: 5.2, R: 6.0 },
-        { C: 78, a1: 4.0, k1: 3, p1: 4.0, a2: 2.0, k2: 6, p2: 1.2, w: 6.0, R: 7.5 }
+        { C: 32, a1: 3.2, k1: 3, p1: 0.4, a2: 1.6, k2: 5, p2: 1.0, w: 4.6, R: 2.4 },
+        { C: 54, a1: 3.6, k1: 2, p1: 2.2, a2: 1.8, k2: 4, p2: 0.3, w: 5.2, R: 3.0 }
     ];
     function ringC(R, th) { return R.C + R.a1 * Math.sin(R.k1 * th + R.p1) + R.a2 * Math.cos(R.k2 * th + R.p2); }
 
@@ -484,7 +453,7 @@ function createEnvironment(GL) {
             var Rg = RINGS[i];
             h += Rg.R * smooth01((r - ringC(Rg, th)) / Rg.w + 0.5);
         }
-        return h + smooth01((r - 94) / 50) * 40;                  // distant hills
+        return h + smooth01((r - 94) / 50) * 12;                  // distant hills
     }
 
     function groundNormal(x, z) {
@@ -542,13 +511,13 @@ function createEnvironment(GL) {
     var WHITE = [0.97, 0.97, 0.97];
     var GRASS = [0.50, 0.84, 0.22], GRASS_L = [0.62, 0.90, 0.30], GRASS_D = [0.40, 0.76, 0.24];
     var STEM = [0.30, 0.68, 0.25], LEAF = [0.35, 0.75, 0.28], YELLOW = [1.0, 0.85, 0.2];
-    var TRUNK = [0.80, 0.42, 0.21];
+    var TRUNK = [0.55, 0.34, 0.18];   // single plain brown
     var PINK_L = [1.0, 0.70, 0.83], PINK_M = [0.97, 0.55, 0.74], PINK_D = [0.90, 0.42, 0.66];
     var BUSH_D = [0.24, 0.62, 0.30], BUSH_L = [0.46, 0.82, 0.34];
     var VINE = [0.17, 0.50, 0.27];
     var ROCK_D = [0.66, 0.66, 0.73], ROCK_M = [0.74, 0.75, 0.81], ROCK_L = [0.84, 0.86, 0.91];
     var WOOD = [0.80, 0.50, 0.26], WOOD_L = [0.88, 0.60, 0.33], SOIL = [0.47, 0.30, 0.20];
-    var FOAM = [0.95, 0.99, 1.0], LILY = [0.34, 0.74, 0.34];
+    var WATER = [0.30, 0.80, 0.85], LILY = [0.34, 0.74, 0.34];
     var RED = [0.92, 0.12, 0.14], PNK = [0.98, 0.52, 0.72], YEL = [1.0, 0.86, 0.25], ORG = [1.0, 0.55, 0.12];
     var FLOWER_COLORS = [RED, RED, PNK, [0.96, 0.38, 0.62], YEL, WHITE];
 
@@ -564,7 +533,15 @@ function createEnvironment(GL) {
     var BED1 = { x: -8, z: 5 }, BED2 = { x: -3, z: -10 }, PLOT = { x: 6, z: 12 };
     var EXCL = [[BED1.x, BED1.z, 5.5], [BED2.x, BED2.z, 5.5], [PLOT.x, PLOT.z, 6.5]];  // [x, z, radius] keep-out circles
 
-    // is (x,z) a good place for decoration? (flat, not on Kuromi / pond / beds / waterfalls)
+    // Hangyodon's walking lane: spawn (world 20,6 = design 8,2.4) heading 135 deg (+x, -z) down to the lake.
+    // Keep-out circles every ~2 units so no tree / bush / rock ever stands in his way.
+    (function () {
+        var sx = 20 / WS, sz = 6 / WS, dx = Math.SQRT1_2, dz = -Math.SQRT1_2;
+        EXCL.push([sx, sz, 5]);                                  // spawn + circle-walk area
+        for (var d = 2; d <= 11; d += 2) EXCL.push([sx + dx * d, sz + dz * d, 3.8]);
+    })();
+
+    // is (x,z) a good place for decoration? (flat, not on Kuromi / pond / beds)
     function okSpot(x, z, m) {
         if (Math.hypot(x, z) < 2.4 + m) return false;
         var pd = Math.hypot(x - POND.x, z - POND.z);
@@ -595,33 +572,6 @@ function createEnvironment(GL) {
         shadows.push({ p: [px, groundH(px, pz) + 0.05, pz], s: [r, 1, r * 0.9], rot: alignUp(groundNormal(px, pz)), r: r });
     }
 
-    /* ---- waterfalls: strips that follow the terrain exactly ---- */
-    var waterfallMeshes = [], foams = [];
-    function buildWaterfall(R, th) {
-        var ct = Math.cos(th), st = Math.sin(th);
-        var c = ringC(R, th), rTop = c + R.w * 0.5 + 1.4, rBot = c - R.w * 0.5 - 1.0;
-        var NR = 22, NC = 6, hw = 1.9, v = [], s = 0, prev = null, i, j;
-        for (i = 0; i <= NR; i++) {
-            var r = rTop + (rBot - rTop) * i / NR;
-            var cx = ct * r, cz = st * r, cy = groundH(cx, cz) + 0.16;
-            if (prev) s += Math.hypot(cx - prev[0], cy - prev[1], cz - prev[2]);
-            prev = [cx, cy, cz];
-            for (j = 0; j <= NC; j++) {
-                var u = (j / NC - 0.5) * 2 * hw * (1 + 0.25 * i / NR);
-                var x = ct * r - st * u, z = st * r + ct * u;
-                var n = groundNormal(x, z);
-                v.push(x, groundH(x, z) + 0.16, z, n[0], n[1], n[2], s);
-            }
-        }
-        waterfallMeshes.push(makeMesh({ vertices: v, indices: gridIndices(NR + 1, NC), stride: 7 }));
-        var fx = ct * (rBot - 0.3), fz = st * (rBot - 0.3);
-        foams.push({ x: fx, y: groundH(fx, fz) + 0.1, z: fz, ph: rnd() * 6 });
-        EXCL.push([fx, fz, 5], [ct * rTop, st * rTop, 3.5]);
-    }
-    [[0, -0.515], [0, 1.9], [0, 3.9], [1, 0.5], [1, 2.6], [1, 4.8], [2, 1.2], [2, 3.4], [2, 5.5]].forEach(function (w) {
-        buildWaterfall(RINGS[w[0]], w[1]);
-    });
-
     /* ---- climbing vines on the cliff faces ---- */
     var vineMeshes = [], vineLeaves = [];
     function buildVine(R, th) {
@@ -642,7 +592,7 @@ function createEnvironment(GL) {
             });
         }
     }
-    [[0, 0.9], [0, 2.9], [0, 4.2], [0, 5.6], [1, 0.2], [1, 1.5], [1, 3.1], [1, 5.1], [2, 0.7], [2, 2.2], [2, 4.0], [2, 5.9]]
+    [[0, 0.9], [0, 2.9], [0, 4.2], [0, 5.6], [1, 0.2], [1, 1.5], [1, 3.1], [1, 5.1]]
         .forEach(function (w) { buildVine(RINGS[w[0]], w[1]); });
 
     // free-standing vines: corkscrew + arch
@@ -699,17 +649,17 @@ function createEnvironment(GL) {
         addShadow(x, z, 0.7 * o.s, 0.5);
         return o;
     });
-    scatter(36, 36, 96, 1, 2, 15, bigTrees, function (x, z) {        // giant pink trees on the terraces
+    scatter(30, 36, 92, 1, 8, 15, bigTrees, function (x, z) {        // giant pink trees on the terraces
         var s = 0.9 + rnd() * 0.6, o = { x: x, z: z, y: groundH(x, z), s: s, H: 9 * s, rad: 1.5 * s, R: 7.5 * s, ph: rnd() * 6.28 };
         addShadow(x, z, 0.95 * o.R, o.H + o.R * 0.3);
         return o;
     });
-    scatter(10, 6, 28, 1, 1, 7, smallTrees, function (x, z) {        // small meadow trees
+    scatter(10, 6, 28, 1, 5, 7, smallTrees, function (x, z) {        // small meadow trees
         var s = 0.85 + rnd() * 0.5, o = { x: x, z: z, y: groundH(x, z), s: s, H: 2.8 * s, rad: 0.5 * s, R: 2.4 * s, ph: rnd() * 6.28 };
         addShadow(x, z, 0.95 * o.R, o.H);
         return o;
     });
-    scatter(9, 5, 34, 1, 1, 4, domes, function (x, z) {              // pink scalloped dome bushes
+    scatter(9, 5, 34, 1, 4, 4, domes, function (x, z) {              // pink scalloped dome bushes
         var o = { x: x, z: z, y: groundH(x, z), R: 1.2 + rnd() * 1.1, ph: rnd() * 6.28 };
         addShadow(x, z, 1.0 * o.R, o.R);
         return o;
@@ -764,14 +714,6 @@ function createEnvironment(GL) {
         return { posts: posts, meshes: meshes, cx: (x0 + x1) / 2, cz: (z0 + z1) / 2 };
     }
     var fences = [buildFence(-12, 1, -12, 12, 7, 0.8, 0), buildFence(0.5, 7, 0.5, 18, 7, 0.8, 1.5), buildFence(-8, -16, 3, -17, 6, 0.7, 3)];
-
-    // [centre x, centre z, radius, speed, phase, colour]
-    var butterflies = [
-        [-5, -2, 3.5, 0.7, 0, [0.98, 0.55, 0.80]], [7, -7, 4.0, 0.55, 2, [0.70, 0.55, 1.00]],
-        [-13, -10, 5.0, 0.5, 4, [1.0, 0.80, 0.30]], [6, 4, 2.5, 0.9, 1, [0.60, 0.85, 1.00]],
-        [12, 14, 4.5, 0.6, 3, [0.98, 0.55, 0.80]], [-10, 12, 3.5, 0.8, 5, [0.60, 0.85, 1.00]],
-        [-18, -4, 4.0, 0.65, 2.5, [1.0, 0.80, 0.30]], [16, -2, 3.0, 0.75, 0.7, [0.70, 0.55, 1.00]]
-    ];
 
     // [azimuth deg, distance, height, scale]
     var clouds = [[-35, 95, 38, 7], [10, 110, 50, 8], [40, 90, 34, 6.5], [75, 100, 42, 7.5], [120, 95, 36, 7],
@@ -880,8 +822,8 @@ function createEnvironment(GL) {
 
     function drawPinkTree(o) {
         setAO(o.y, o.H * 0.9);
-        draw(pill, [o.x, o.y + o.H * 0.5 - 0.2, o.z], [o.rad, o.H * 0.5 + 0.2, o.rad], TRUNK, null, 9);
-        draw(sphere, [o.x, o.y + 0.1, o.z], [o.rad * 1.5, o.rad * 0.55, o.rad * 1.5], TRUNK, null, 9);
+        draw(pill, [o.x, o.y + o.H * 0.5 - 0.2, o.z], [o.rad, o.H * 0.5 + 0.2, o.rad], TRUNK);
+        draw(sphere, [o.x, o.y + 0.1, o.z], [o.rad * 1.5, o.rad * 0.55, o.rad * 1.5], TRUNK);
         setAO(0, 0);
         drawCanopy(o.x, o.y + o.H + 0.2 * o.R, o.z, o.R, o.ph);
     }
@@ -950,19 +892,6 @@ function createEnvironment(GL) {
         }
     }
 
-    function drawButterfly(b, t) {
-        var a = t * b[3] + b[4];
-        var x = b[0] + Math.cos(a) * b[2], z = b[1] + Math.sin(a) * b[2] * 0.7;
-        var y = groundH(x, z) + 1.6 + Math.sin(t * 2 + b[4]) * 0.3;
-        var dx = -Math.sin(a), dz = Math.cos(a) * 0.7;
-        var ry = Math.atan2(-dz, dx), f = Math.sin(t * 18) * 0.8;
-        draw(sphere, [x, y, z], [0.12, 0.03, 0.03], [0.2, 0.15, 0.25], [0, ry, 0]);
-        for (var s = -1; s <= 1; s += 2) {
-            var wy = Math.sin(f) * 0.2, wz = s * Math.cos(f) * 0.2;
-            draw(sphere, [x + wz * Math.sin(ry), y + wy, z + wz * Math.cos(ry)], [0.14, 0.015, 0.2], b[5], [-s * f, ry, 0]);
-        }
-    }
-
     /* ----------------------------- public API ----------------------------- */
     function renderScene(t) {
         var k, o, dd;
@@ -993,22 +922,13 @@ function createEnvironment(GL) {
         GL.depthMask(true);
         GL.disable(GL.BLEND);
 
-        // pond, lilies, waterfalls
-        draw(disc, [POND.x, WATER_Y, POND.z], [10, 1, 10], WHITE, null, 6);
+        // pond + lilies
+        draw(disc, [POND.x, WATER_Y, POND.z], [10, 1, 10], WATER, null, 6);
         for (k = 0; k < pads.length; k++) {
             o = pads[k];
             var py = WATER_Y + 0.05 + 0.015 * Math.sin(t * 1.3 + o.ph);
             draw(sphere, [o.x, py, o.z], [0.7 * o.s, 0.05, 0.7 * o.s], LILY);
             if (o.flower) draw(sphere, [o.x, py + 0.1, o.z], [0.16, 0.12, 0.16], PINK_M);
-        }
-        for (k = 0; k < waterfallMeshes.length; k++) draw(waterfallMeshes[k], [0, 0, 0], [1, 1, 1], WHITE, null, 5);
-        for (k = 0; k < foams.length; k++) {
-            o = foams[k];
-            if (!vis(o.x, o.y, o.z, 3, 130)) continue;
-            var fs = 1 + 0.12 * Math.sin(t * 3 + o.ph);
-            draw(sphere, [o.x, o.y + 0.15, o.z], [1.7 * fs, 0.55, 1.7 * fs], FOAM);
-            draw(sphere, [o.x + 0.9, o.y + 0.1, o.z + 0.4], [0.9, 0.4, 0.9], FOAM);
-            draw(sphere, [o.x - 0.8, o.y + 0.1, o.z - 0.5], [0.8, 0.35, 0.8], FOAM);
         }
 
         // vines on the cliffs
@@ -1092,10 +1012,6 @@ function createEnvironment(GL) {
         for (k = 0; k < mushrooms.length; k++) {
             o = mushrooms[k];
             if (vis(o.x, o.y, o.z, 1, 70)) drawMushroom(o);
-        }
-        for (k = 0; k < butterflies.length; k++) {
-            o = butterflies[k];
-            if (vis(o[0], 0, o[1], 6, 80)) drawButterfly(o, t);
         }
     }
 
