@@ -49,7 +49,7 @@ var cam = { P: perspective(40, CANVAS.width / CANVAS.height, 1, 600), V: new Flo
 var chars = [
     // x, z   = posisi di dunia (satuan world; +x = kanan layar, +z = ke arah kamera/bawah layar)
     // yawDeg = arah hadap: 0 = +z (ke kamera), 90 = +x (kanan), 180 = -z (menjauh), -90 = -x (kiri)
-    { name: "Kuromi",     obj: window.createKuromi(GL, cam), x: 14, z: -20, yawDeg:  25, scale: 1.0, foot: -2.10 },
+    { name: "Kuromi",     obj: window.createKuromi(GL, cam), x: 14, z: -20, yawDeg: -20, scale: 1.0, foot: -2.10 },
     { name: "Badtz-Maru", obj: window.createBadtz(GL, cam),  x:  3, z:   4, yawDeg:  90, scale: 1.2, foot: -2.57 },
     { name: "Hangyodon",  obj: createHangyodon(GL, cam),     x: 20, z:   6, yawDeg: 135, scale: 1.1, foot: -2.26 }
 ];

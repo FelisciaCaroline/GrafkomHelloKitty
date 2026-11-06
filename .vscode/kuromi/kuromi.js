@@ -1,4 +1,49 @@
-// Kuromi sebagai "factory": window.createKuromi(GL, cam)
+// kuromi.js  =  ENTRY / LOADER Kuromi
+// Di index.html cukup satu baris ini (sama seperti badtz_entry.js):
+//     <script src="kuromi/kuromi.js"></script>     -> menyediakan window.createKuromi(GL, cam)
+// File ini berisi kode utama Kuromi + otomatis memuat modul lainnya (urutan penting) dari folder yang sama dengan dirinya,
+// jadi index.html TIDAK perlu mendaftar file-file lain.
+//
+// Bagian-bagian Kuromi (semua ada di folder yang sama):
+//   kuromi_geometry.js  bentuk 3D            kuromi_shaders.js  shader & uniform
+//   kuromi_utils.js     matriks, easing      kuromi_walk.js     jalan (lurus / muter / berhenti)
+//   kuromi_happy.js     animasi happy/cheer  kuromi_wave.js     animasi wave
+//   (kode utama createKuromi: state, pose, render, API = bagian bawah file ini)
+// Menambah modul baru: taruh filenya di folder ini lalu tambahkan namanya di daftar PARTS di bawah.
+(function () {
+
+var PARTS = [
+    "kuromi_geometry.js",
+    "kuromi_utils.js",
+    "kuromi_shaders.js",
+    "kuromi_walk.js",
+    "kuromi_happy.js",
+    "kuromi_wave.js"
+];
+
+// folder tempat file ini berada (jadi folder Kuromi boleh dipindah / diganti namanya)
+var me = document.currentScript;
+if (!me) { var all = document.getElementsByTagName("script"); me = all[all.length - 1]; }
+var BASE = me.src.replace(/[^\/]*$/, "");
+window.KuromiLib = window.KuromiLib || {};
+window.KuromiLib.BASE = BASE;                         // dipakai kode utama di bawah untuk mencari skull.png
+
+if (document.readyState !== "loading") {
+    console.error("Kuromi: kuromi.js harus dimuat lewat <script src> biasa di index.html (bukan dipasang setelah halaman selesai dimuat).");
+    return;
+}
+// document.write saat halaman masih di-parse: script yang ditulis dieksekusi BERURUTAN dan SELESAI
+// sebelum <script> berikutnya di index.html (termasuk world.js). Kode utama di bawah baru membaca modul saat createKuromi() dipanggil.
+PARTS.forEach(function (f) {
+    document.write('<script src="' + BASE + f + '"><\/script>');
+});
+
+})();
+
+/*=================================================================================================
+   KODE UTAMA KUROMI (factory createKuromi)
+=================================================================================================*/
+// ===== KODE UTAMA: Kuromi sebagai "factory": window.createKuromi(GL, cam) =====
 // Canvas, kamera, input, dan loop ada di world.js. Environment digambar otomatis oleh environment.js.
 // Animasi (idle + cheer + walk + laugh + wave) dihitung di sini memakai performance.now(), jadi world.js hanya perlu memanggil API-nya.
 // API:
@@ -16,436 +61,47 @@
 // Tombol diatur di world.js (hanya aktif saat Kuromi difokus): J = walk, C = circle, H = cheer, K = laugh, V = wave
 (function () {
 
-function gridIndices(rows, cols) {
-    var idx = [];
-    for (var i = 0; i < rows - 1; i++) {
-        for (var j = 0; j < cols; j++) {
-            var a = i * (cols + 1) + j;
-            var b = a + cols + 1;
-            idx.push(a, b, a + 1, b, b + 1, a + 1);
-        }
-    }
-    return idx;
-}
+var L = window.KuromiLib;   // diisi modul-modul lain (lihat daftar PARTS di atas)
 
-function makeSphere(r, lats, longs) {
-    var v = [];
-    for (var i = 0; i <= lats; i++) {
-        var lat = i * Math.PI / lats;
-        for (var j = 0; j <= longs; j++) {
-            var lon = j * 2 * Math.PI / longs;
-            var x = Math.cos(lon) * Math.sin(lat);
-            var y = Math.cos(lat);
-            var z = Math.sin(lon) * Math.sin(lat);
-            v.push(r * x, r * y, r * z, x, y, z);
-        }
-    }
-    return { vertices: v, indices: gridIndices(lats + 1, longs) };
-}
-
-function makeEyePatch(cx, cy, rx, ry, side, n, lift) {
-    var LID_A = 0.35;
-    var LID_S = 0.45;
-    var v = [];
-    for (var i = 0; i <= n; i++) {
-        var w = i / n;
-        for (var j = 0; j <= n; j++) {
-            var lx = -Math.cos(Math.PI * j / n);
-            var e = Math.sqrt(Math.max(1 - lx * lx, 0));
-            var yb = -e;
-            var yt = Math.max(Math.min(e, LID_A + LID_S * lx), yb);
-            var ly = yb + (yt - yb) * w;
-
-            var x = cx + side * lx * rx;
-            var y = cy + ly * ry;
-            var q = Math.max(1 - (x / 1.5) * (x / 1.5) - (y - 1.3) * (y - 1.3), 0);
-            var z = 0.8 + 0.9 * Math.sqrt(q) + lift;
-
-            var nx = x / 2.25, ny = (y - 1.3), nz = (z - 0.8) / 0.81;
-            var l = Math.hypot(nx, ny, nz) || 1;
-            v.push(x, y, z, nx / l, ny / l, nz / l);
-        }
-    }
-    return { vertices: v, indices: gridIndices(n + 1, n) };
-}
-
-function makePeakPatch(cy, halfW, height, n) {
-    var v = [];
-    for (var i = 0; i <= n; i++) {
-        var t = i / n;
-        var curWidth = halfW * (1 - t);
-        var y = cy - t * height;
-        for (var j = 0; j <= n; j++) {
-            var u = j / n;
-            var x = (u * 2 - 1) * curWidth;
-
-            var qh = Math.max(1 - (x / 1.9) * (x / 1.9) - ((y - 1.6) / 1.55) * ((y - 1.6) / 1.55), 0);
-            var zh = 1.6 * Math.sqrt(qh);
-            var qf = Math.max(1 - (x / 1.5) * (x / 1.5) - (y - 1.3) * (y - 1.3), 0);
-            var zf = 0.8 + 0.9 * Math.sqrt(qf);
-
-            var z, nx, ny, nz;
-            if (zf > zh) {
-                z = zf + 0.03;
-                nx = x / 2.25; ny = (y - 1.3) / 1.0; nz = (z - 0.8) / 0.81;
-            } else {
-                z = zh + 0.03;
-                nx = x / 3.61; ny = (y - 1.6) / 2.4025; nz = z / 2.56;
-            }
-            var l = Math.hypot(nx, ny, nz) || 1;
-            v.push(x, y, z, nx / l, ny / l, nz / l);
-        }
-    }
-    return { vertices: v, indices: gridIndices(n + 1, n) };
-}
-
-function makeCone(r, h, seg) {
-    var slope = r / h;
-    var len = Math.hypot(1, slope);
-    var v = [0, h, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0];
-    var idx = [];
-    for (var i = 0; i <= seg; i++) {
-        var c = Math.cos(i * 2 * Math.PI / seg);
-        var s = Math.sin(i * 2 * Math.PI / seg);
-        v.push(c * r, 0, s * r, c / len, slope / len, s / len);
-    }
-    for (var j = 0; j < seg; j++) {
-        idx.push(0, j + 2, j + 3, 1, j + 3, j + 2);
-    }
-    return { vertices: v, indices: idx };
-}
-
-function makeDiamond(rMid, hBot, hTop, seg) {
-    var v = [0, 0, 0, 0, -1, 0, 0, hBot + hTop, 0, 0, 1, 0];
-    var idx = [];
-    var sides = [[hBot, -1], [hTop, 1]];
-
-    for (var side = 0; side < sides.length; side++) {
-        var h = sides[side][0];
-        var sign = sides[side][1];
-        var slope = rMid / h;
-        var len = Math.hypot(1, slope);
-        var start = v.length / 6;
-
-        for (var i = 0; i <= seg; i++) {
-            var c = Math.cos(i * 2 * Math.PI / seg);
-            var s = Math.sin(i * 2 * Math.PI / seg);
-            v.push(c * rMid, hBot, s * rMid, c / len, sign * slope / len, s / len);
-        }
-        for (var j = 0; j < seg; j++) {
-            idx.push(side, start + j, start + j + 1);
-        }
-    }
-    return { vertices: v, indices: idx };
-}
-
-function makeLeg(rows, seg) {
-    var f = function (t) {
-        var w = 0.82 + 0.18 * t;
-        var k = 0.24, c = 1, q;
-        if (t < k) { q = (k - t) / k; c = Math.sqrt(Math.max(0, 1 - q * q)); }
-        else if (t > 1 - k) { q = (t - (1 - k)) / k; c = Math.sqrt(Math.max(0, 1 - q * q)); }
-        return w * c;
-    };
-    var v = [];
-    for (var i = 0; i <= rows; i++) {
-        var t = i / rows;
-        var y = 1 - 2 * t;
-        var r = f(t);
-        var t0 = Math.max(0, t - 0.002), t1 = Math.min(1, t + 0.002);
-        var dr = (f(t1) - f(t0)) / (t1 - t0);
-        var nr = 2, ny = dr;
-        var nl = Math.hypot(nr, ny);
-        nr /= nl; ny /= nl;
-        for (var j = 0; j <= seg; j++) {
-            var a = j * 2 * Math.PI / seg;
-            var c = Math.cos(a), s = Math.sin(a);
-            v.push(r * c, y, r * s, nr * c, ny, nr * s);
-        }
-    }
-    return { vertices: v, indices: gridIndices(rows + 1, seg) };
-}
-
-// pos(3) normal(3) uv(2) => stride 32 bytes
-function makeSkullPatch(cy, halfW, halfH, n, lift) {
-    var v = [];
-    for (var i = 0; i <= n; i++) {
-        for (var j = 0; j <= n; j++) {
-            var u = j / n, w = i / n;
-            var x = (u * 2 - 1) * halfW;
-            var y = cy + (1 - w * 2) * halfH;
-            var q = 1 - (x / 1.9) * (x / 1.9) - ((y - 1.6) / 1.55) * ((y - 1.6) / 1.55);
-            var z = 1.6 * Math.sqrt(Math.max(q, 0)) + lift;
-            var nx = x / 3.61, ny = (y - 1.6) / 2.4025, nz = z / 2.56;
-            var l = Math.hypot(nx, ny, nz);
-            v.push(x, y, z, nx / l, ny / l, nz / l, u, 1 - w);
-        }
-    }
-    return { vertices: v, indices: gridIndices(n + 1, n), stride: 32, textured: true };
-}
-
-function sweepVertices(P, profile, steps, seg) {
-    var cross = function (a, b) {
-        return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-    };
-    var norm = function (a) {
-        var l = Math.hypot(a[0], a[1], a[2]) || 1;
-        return [a[0] / l, a[1] / l, a[2] / l];
-    };
-    var point = function (t) {
-        var u = 1 - t;
-        return [0, 1, 2].map(function (k) {
-            return u * u * u * P[0][k] + 3 * u * u * t * P[1][k] + 3 * u * t * t * P[2][k] + t * t * t * P[3][k];
-        });
-    };
-    var tangent = function (t) {
-        var u = 1 - t;
-        return norm([0, 1, 2].map(function (k) {
-            return 3 * u * u * (P[1][k] - P[0][k]) + 6 * u * t * (P[2][k] - P[1][k]) + 3 * t * t * (P[3][k] - P[2][k]);
-        }));
-    };
-
-    var v = [];
-    var N = null;
-    for (var i = 0; i <= steps; i++) {
-        var t = i / steps;
-        var C = point(t);
-        var T = tangent(t);
-
-        if (!N) {
-            N = norm(cross(Math.abs(T[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], T));
-        } else {
-            var d = N[0] * T[0] + N[1] * T[1] + N[2] * T[2];
-            N = norm(N.map(function (n, k) { return n - d * T[k]; }));
-        }
-        var B = cross(T, N);
-        var prof = profile(t);
-        var rx = prof[0], ry = prof[1];
-
-        for (var j = 0; j <= seg; j++) {
-            var c = Math.cos(j * 2 * Math.PI / seg);
-            var s = Math.sin(j * 2 * Math.PI / seg);
-            var n = norm([0, 1, 2].map(function (k) { return (c / rx) * N[k] + (s / ry) * B[k]; }));
-            v.push(
-                C[0] + rx * c * N[0] + ry * s * B[0],
-                C[1] + rx * c * N[1] + ry * s * B[1],
-                C[2] + rx * c * N[2] + ry * s * B[2],
-                n[0], n[1], n[2]
-            );
-        }
-    }
-    return v;
-}
-
-/*========================= MATRIX HELPERS (column-major) ========================= */
-function mul4(a, b) {
-    var o = new Float32Array(16);
-    for (var c = 0; c < 4; c++) {
-        for (var r = 0; r < 4; r++) {
-            for (var k = 0; k < 4; k++) {
-                o[c * 4 + r] += a[k * 4 + r] * b[c * 4 + k];
-            }
-        }
-    }
-    return o;
-}
-
-function translateM(x, y, z) {
-    return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
-}
-
-function scaleM(x, y, z) {
-    return new Float32Array([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]);
-}
-
-function rotationMatrix(rx, ry, rz) {
-    var cx = Math.cos(rx), sx = Math.sin(rx);
-    var cy = Math.cos(ry), sy = Math.sin(ry);
-    var cz = Math.cos(rz), sz = Math.sin(rz);
-    var RX = [1, 0, 0, 0, 0, cx, sx, 0, 0, -sx, cx, 0, 0, 0, 0, 1];
-    var RY = [cy, 0, -sy, 0, 0, 1, 0, 0, sy, 0, cy, 0, 0, 0, 0, 1];
-    var RZ = [cz, sz, 0, 0, -sz, cz, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-    return mul4(RZ, mul4(RY, RX));
-}
-
-// ROTASI: putar "child" di sekitar titik pivot (px,py,pz), di dalam ruang parent
-function pivotRot(parent, px, py, pz, rx, ry, rz) {
-    return mul4(parent, mul4(translateM(px, py, pz), mul4(rotationMatrix(rx, ry, rz), translateM(-px, -py, -pz))));
-}
-
-// SCALING: skala di sekitar y = py (squash & stretch dari telapak kaki)
-function pivotScale(parent, sx, sy, py) {
-    return mul4(parent, mul4(translateM(0, py, 0), mul4(scaleM(sx, sy, sx), translateM(0, -py, 0))));
-}
-
-// ARBITRARY ROTATE: rotasi sebesar 'ang' di sekitar SUMBU SEMBARANG (ax,ay,az) - rumus Rodrigues
-function axisAngleM(ax, ay, az, ang) {
-    var l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
-    var c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
-    return new Float32Array([
-        t * ax * ax + c,      t * ax * ay + s * az, t * ax * az - s * ay, 0,
-        t * ax * ay - s * az, t * ay * ay + c,      t * ay * az + s * ax, 0,
-        t * ax * az + s * ay, t * ay * az - s * ax, t * az * az + c,      0,
-        0, 0, 0, 1
-    ]);
-}
-
-// ARBITRARY ROTATE: rotasi sumbu sembarang + titik pivot sembarang
-function pivotAxis(parent, px, py, pz, ax, ay, az, ang) {
-    return mul4(parent, mul4(translateM(px, py, pz), mul4(axisAngleM(ax, ay, az, ang), translateM(-px, -py, -pz))));
-}
-
-/*========================= EASING HELPERS ========================= */
-function clamp01(x) { return Math.min(1, Math.max(0, x)); }
-function smooth(x) { x = clamp01(x); return x * x * (3 - 2 * x); }
-
-// Interpolasi keyframe [[t, nilai], ...] memakai spline Hermite (kecepatan halus, tidak berhenti di tiap key).
-// Di puncak/lembah/plateau kecepatan dibuat nol supaya tidak overshoot.
-function keys(t, k) {
-    var n = k.length;
-    if (t <= k[0][0]) return k[0][1];
-    if (t >= k[n - 1][0]) return k[n - 1][1];
-    var slope = function (i) {
-        if (i <= 0 || i >= n - 1) return 0;
-        var a = k[i][1] - k[i - 1][1], b = k[i + 1][1] - k[i][1];
-        if (a * b <= 0) return 0;
-        return (k[i + 1][1] - k[i - 1][1]) / (k[i + 1][0] - k[i - 1][0]);
-    };
-    for (var i = 1; i < n; i++) {
-        if (t < k[i][0]) {
-            var h = k[i][0] - k[i - 1][0];
-            var u = (t - k[i - 1][0]) / h;
-            var u2 = u * u, u3 = u2 * u;
-            return (2 * u3 - 3 * u2 + 1) * k[i - 1][1] + (u3 - 2 * u2 + u) * h * slope(i - 1)
-                 + (-2 * u3 + 3 * u2) * k[i][1] + (u3 - u2) * h * slope(i);
-        }
-    }
-    return k[n - 1][1];
-}
-
-function easeOutBack(x) {
-    var c1 = 1.70158, c3 = c1 + 1, y = x - 1;
-    return 1 + c3 * y * y * y + c1 * y * y;
-}
-
-function removeWhiteBackground(p, w, h) {
-    var isBg = function (i) {
-        return p[i + 3] < 10 || (p[i] > 200 && p[i + 1] > 200 && p[i + 2] > 200);
-    };
-    var seen = new Uint8Array(w * h), stack = [], k, x, y;
-    var push = function (px, py) {
-        var n = py * w + px;
-        if (px < 0 || py < 0 || px >= w || py >= h || seen[n]) return;
-        if (!isBg(n * 4)) return;
-        seen[n] = 1; stack.push(n);
-    };
-    for (x = 0; x < w; x++) { push(x, 0); push(x, h - 1); }
-    for (y = 0; y < h; y++) { push(0, y); push(w - 1, y); }
-    while (stack.length) {
-        var n = stack.pop(), px = n % w, py = (n - px) / w;
-        push(px + 1, py); push(px - 1, py); push(px, py + 1); push(px, py - 1);
-    }
-    for (var pass = 0; pass < 2; pass++) {
-        var add = [];
-        for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
-            var m = y * w + x;
-            if (seen[m]) continue;
-            var near = (x > 0 && seen[m - 1]) || (x < w - 1 && seen[m + 1]) || (y > 0 && seen[m - w]) || (y < h - 1 && seen[m + w]);
-            if (!near) continue;
-            var i = m * 4, mn = Math.min(p[i], p[i + 1], p[i + 2]), mx = Math.max(p[i], p[i + 1], p[i + 2]);
-            if (mn > 140 && mx - mn < 45) add.push(m);
-        }
-        for (k = 0; k < add.length; k++) seen[add[k]] = 1;
-    }
-    for (k = 0; k < w * h; k++) {
-        if (seen[k]) { p[k * 4] = 0; p[k * 4 + 1] = 0; p[k * 4 + 2] = 0; p[k * 4 + 3] = 0; }
-        else p[k * 4 + 3] = 255;
-    }
-}
-
-function nextPOT(n) { var v = 1; while (v < n) v *= 2; return v; }
 
 window.createKuromi = function (GL, cam) {
 
-    /*========================= SHADERS ========================= */
-    var shader_vertex_source = `
-        attribute vec3 position;
-        attribute vec3 normal;
-        attribute vec2 uv;
-        uniform mat4 Pmatrix, Vmatrix, Mmatrix;
-        uniform vec3 uOffset, uScale;
-        uniform mat4 uLocalRotation;
-        varying vec3 vNormal;
-        varying vec2 vUV;
+    // ---- ambil fungsi dari modul pendukung (baru dijalankan saat createKuromi dipanggil, jadi semua modul sudah termuat) ----
+    if (!L || !L.createShaders || !L.walkUpdate || !L.cheerTime || !L.waveUpdate || !L.makeSphere || !L.mul4) {
+        throw new Error("Kuromi: muat dulu kuromi_geometry.js, kuromi_utils.js, kuromi_shaders.js, kuromi_walk.js, kuromi_happy.js, kuromi_wave.js SEBELUM kuromi.js");
+    }
+    var gridIndices = L.gridIndices;
+    var makeSphere = L.makeSphere;
+    var makeEyePatch = L.makeEyePatch;
+    var makePeakPatch = L.makePeakPatch;
+    var makeCone = L.makeCone;
+    var makeDiamond = L.makeDiamond;
+    var makeLeg = L.makeLeg;
+    var makeSkullPatch = L.makeSkullPatch;
+    var sweepVertices = L.sweepVertices;
+    var mul4 = L.mul4;
+    var translateM = L.translateM;
+    var scaleM = L.scaleM;
+    var rotationMatrix = L.rotationMatrix;
+    var pivotRot = L.pivotRot;
+    var pivotScale = L.pivotScale;
+    var axisAngleM = L.axisAngleM;
+    var pivotAxis = L.pivotAxis;
+    var clamp01 = L.clamp01;
+    var smooth = L.smooth;
+    var keys = L.keys;
+    var easeOutBack = L.easeOutBack;
+    var removeWhiteBackground = L.removeWhiteBackground;
+    var nextPOT = L.nextPOT;
+    var W = L.WALK;   // parameter jalan (kuromi_walk.js)
 
-        void main(void) {
-            vec3 p = (uLocalRotation * vec4(position * uScale, 1.0)).xyz + uOffset;
-            gl_Position = Pmatrix * Vmatrix * Mmatrix * vec4(p, 1.0);
-
-            vec3 n = normalize(normal / uScale);
-            vNormal = (Vmatrix * Mmatrix * uLocalRotation * vec4(n, 0.0)).xyz;
-            vUV = uv;
-        }`;
-
-    var shader_fragment_source = `
-        precision mediump float;
-        uniform vec3 uColor;
-        uniform sampler2D uTex;
-        uniform float uUseTex;
-        varying vec3 vNormal;
-        varying vec2 vUV;
-
-        void main(void) {
-            vec3 base = uColor;
-            if (uUseTex > 0.5) {
-                vec4 t = texture2D(uTex, vUV);
-                if (t.a < 0.5) discard;
-                base = t.rgb * uColor;
-            }
-
-            vec3 N = normalize(vNormal);
-            vec3 L = normalize(vec3(-0.4, 0.7, 0.8));
-            vec3 V = vec3(0.0, 0.0, 1.0);
-            vec3 H = normalize(L + V);
-
-            float diff = max(dot(N, L), 0.0);
-            float spec = pow(max(dot(N, H), 0.0), 28.0);
-            float rim  = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-
-            vec3 col = base * (0.5 + 0.6 * diff) + vec3(0.22) * spec + vec3(0.10) * rim;
-            gl_FragColor = vec4(col, 1.0);
-        }`;
-
-    var compile_shader = function (source, type, typeString) {
-        var shader = GL.createShader(type);
-        GL.shaderSource(shader, source);
-        GL.compileShader(shader);
-        if (!GL.getShaderParameter(shader, GL.COMPILE_STATUS)) {
-            alert("KUROMI " + typeString + " SHADER: " + GL.getShaderInfoLog(shader));
-            return false;
-        }
-        return shader;
-    };
-
-    var SHADER_PROGRAM = GL.createProgram();
-    GL.attachShader(SHADER_PROGRAM, compile_shader(shader_vertex_source, GL.VERTEX_SHADER, "VERTEX"));
-    GL.attachShader(SHADER_PROGRAM, compile_shader(shader_fragment_source, GL.FRAGMENT_SHADER, "FRAGMENT"));
-    GL.linkProgram(SHADER_PROGRAM);
-    GL.useProgram(SHADER_PROGRAM);
-
-    var _position = GL.getAttribLocation(SHADER_PROGRAM, "position");
-    var _normal = GL.getAttribLocation(SHADER_PROGRAM, "normal");
-    var _uv = GL.getAttribLocation(SHADER_PROGRAM, "uv");
-
-    var _Pmatrix = GL.getUniformLocation(SHADER_PROGRAM, "Pmatrix");
-    var _Vmatrix = GL.getUniformLocation(SHADER_PROGRAM, "Vmatrix");
-    var _Mmatrix = GL.getUniformLocation(SHADER_PROGRAM, "Mmatrix");
-    var _uOffset = GL.getUniformLocation(SHADER_PROGRAM, "uOffset");
-    var _uScale = GL.getUniformLocation(SHADER_PROGRAM, "uScale");
-    var _uColor = GL.getUniformLocation(SHADER_PROGRAM, "uColor");
-    var _uRot = GL.getUniformLocation(SHADER_PROGRAM, "uLocalRotation");
-    var _uTex = GL.getUniformLocation(SHADER_PROGRAM, "uTex");
-    var _uUseTex = GL.getUniformLocation(SHADER_PROGRAM, "uUseTex");
+    /*========================= SHADERS (kuromi_shaders.js) ========================= */
+    var SH = L.createShaders(GL);
+    var SHADER_PROGRAM = SH.program;
+    var _position = SH.position, _normal = SH.normal, _uv = SH.uv;
+    var _Pmatrix = SH.Pmatrix, _Vmatrix = SH.Vmatrix, _Mmatrix = SH.Mmatrix;
+    var _uOffset = SH.uOffset, _uScale = SH.uScale, _uColor = SH.uColor;
+    var _uRot = SH.uRot, _uTex = SH.uTex, _uUseTex = SH.uUseTex;
 
     /*======================== GEOMETRY & BUFFERS ======================== */
     var makeMesh = function (data) {
@@ -520,7 +176,7 @@ window.createKuromi = function (GL, cam) {
     GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE);
 
     // path relatif terhadap index.html di root project
-    var SKULL_FILE = "kuromi/skull.png";
+    var SKULL_FILE = (L.BASE || "kuromi/") + "skull.png";   // folder yang sama dengan kuromi.js (BASE diisi loader)
 
     var skullImg = new Image();
     skullImg.onload = function () {
@@ -588,8 +244,6 @@ window.createKuromi = function (GL, cam) {
     var BLUSH = [1.0, 0.66, 0.78];
     var MOUTH = [0.46, 0.10, 0.22];
     var STAR_Y = [1.0, 0.95, 0.55];
-    var STAR_O = [1.0, 0.62, 0.42];
-    var HEART = [0.95, 0.25, 0.42];
     var TEAR = [0.55, 0.82, 1.0];
 
     var FEET_Y = -2.1;          // titik tumpu squash & stretch
@@ -679,41 +333,20 @@ window.createKuromi = function (GL, cam) {
     //  c 0.7 - 0.9   : pop naik cepat (sedikit overshoot), mulut terbuka, tangan merapat ke dada
     //  c 0.95        : mata ^ ^
     //  c 1.1 / 1.4 / 1.55 / 1.75 : kilau kecil, kilau putih besar, kilau oranye, hati
-    var IDLE_LEN = 6.1, CHEER_LEN = 4.4, HAPPY_END = 3.4;
+    var IDLE_LEN = 6.1;
 
     // goyang kepala (-1..1) per fase siklus 4.1 dtk: lembah (tahan) -> naik cepat ~1.1 dtk -> puncak (tahan) -> turun pelan
     var SWAY_KEYS = [[0, -1], [0.03, -1], [0.27, 1], [0.34, 1], [1, -1]];
     var SWAY_PERIOD = 4.1, SWAY_OFFSET = 0.5;
 
-    // kurva cheer (ukur dari video): squash badan, menunduk kepala (rad), lebar tangan ke samping
-    var SQ_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.35], [0.5, 0.6], [0.6, 0.65], [0.7, 0.55], [0.8, 0.0], [0.9, -0.35], [1.1, -0.2], [1.5, -0.1], [3.2, -0.06], [4.2, 0]];
-    var PITCH_KEYS = [[0, 0], [0.1, 0.05], [0.3, 0.2], [0.5, 0.36], [0.6, 0.4], [0.7, 0.35], [0.8, 0.05], [0.9, -0.1], [1.1, -0.06], [1.5, -0.05], [3.2, -0.03], [4.2, 0]];
-    var ARMOUT_KEYS = [[0, 0], [0.15, 0.15], [0.35, 0.6], [0.55, 1.0], [0.68, 1.0], [0.8, 0.2], [0.9, 0]];
-    // TRANSLASI: lompatan saat "pop" (unit model). Naik cepat di c 0.75-0.95, turun pelan, mendarat di c 1.35
-    var JUMP_KEYS = [[0, 0], [0.75, 0], [0.95, 0.45], [1.15, 0.22], [1.35, 0], [4.4, 0]];
-
-    // dekorasi muncul berurutan seperti di video (posisi dalam ruang model, di depan telinga)
-    var DECOR = [
-        { on: 1.10, x: 2.45, y: 1.35, z: 1.8, size: 0.30, type: 'star', col: STAR_Y, k: 0.0 },
-        { on: 1.35, x: 2.75, y: 0.55, z: 1.8, size: 0.22, type: 'star', col: STAR_Y, k: 2.1 },
-        { on: 1.40, x: -0.45, y: 4.95, z: 2.0, size: 0.95, type: 'star', col: [1.0, 1.0, 0.92], k: 4.0 },
-        { on: 1.55, x: 0.55, y: 4.60, z: 2.0, size: 0.55, type: 'star', col: STAR_O, fat: 1.9, k: 1.2 },
-        { on: 1.75, x: 1.50, y: 4.60, z: 2.0, size: 0.46, type: 'heart', col: HEART, k: 3.1 }
-    ];
+    // (kurva & parameter cheer/happy ada di kuromi_happy.js -> L.HAPPY)
 
     /* ---- parameter jalan ----
        Mode 'line'   : jalan LURUS satu arah (tanpa putar balik), terus sampai J ditekan lagi (atau sampai STRAIGHT_DIST).
          LINE_ANGLE : arah jalan. 0 = ke bawah layar / arah kamera, Math.PI/2 = ke kanan layar
        Mode 'circle' : jalan memutar membentuk lingkaran berjari-jari CIRCLE_R.
        Posisi terakhir (A.x, A.z) selalu disimpan, jadi setelah animasi lain dia lanjut dari titik itu. */
-    var WALK_SPEED = 2.3;                 // kecepatan (unit/detik)
-    var STRAIGHT_DIST = Infinity;         // jarak maksimum jalan lurus. Infinity = jalan terus sampai tombol J ditekan lagi
-    var LINE_ANGLE = 0;                   // arah jalan lurus: 0 = ke bawah layar (arah kamera), Math.PI = ke atas, Math.PI/2 = kanan, -Math.PI/2 = kiri
-    var TURN_SPEED = 4.0;                 // kecepatan berputar badan (rad/detik)
-    var WALK_RELATIVE_TO_CAMERA = true;   // true = arah jalan lurus mengikuti LAYAR saat J ditekan (dikunci selama jalan); false = pakai LINE_ANGLE (arah dunia)
-    var WALK_SCREEN_OFFSET = -0.25;       // relatif layar: 0 = ke bawah layar, negatif = ke kiri, positif = ke kanan (Math.PI = ke atas)
-    var CIRCLE_R = 2.2;                   // jari-jari lingkaran
-    var CIRCLE_DIR = 1;                   // 1 = satu arah putar, -1 = kebalikannya
+    // (nilai parameter jalan ada di kuromi_walk.js -> L.WALK)
 
     /* ---- parameter tanah (supaya tidak melayang) ----
        Tiap frame, posisi telapak kaki di dunia dihitung dari matriks M, lalu badan diturunkan/dinaikkan
@@ -732,10 +365,7 @@ window.createKuromi = function (GL, cam) {
         return null;
     };
 
-    /* ---- parameter idle "melambai" ---- */
-    var WAVE_LEN = 3.6;                   // durasi total (detik)
-    var WAVE_SIDE = 1;                    // 1 = tangan di sisi +x (kanan layar), -1 = kiri layar
-    var WAVE_RATE = 2.6;                  // ayunan tangan per detik
+    // (parameter wave ada di kuromi_wave.js -> L.WAVE)
 
     var worldPos = null;                  // posisi dunia Kuromi sekarang (null sebelum frame pertama), dipakai kamera
     var t0 = performance.now() / 1000;
@@ -746,24 +376,15 @@ window.createKuromi = function (GL, cam) {
         breath: 0, armPh: 0, tailPh: 0, bobPh: 0,
         happy: 0, eyeHappy: 0, earRoll: 0,
         walking: false, followPath: true, walkAmt: 0, walkPh: 0,
-        x: 0, z: 0, walked: 0, myaw: 0, lineAngle: LINE_ANGLE, heading: 0,              // posisi dunia terakhir, jarak tempuh jalan lurus, arah hadap badan (rad)
+        x: 0, z: 0, walked: 0, myaw: 0, lineAngle: W.LINE_ANGLE, heading: 0,              // posisi dunia terakhir, jarak tempuh jalan lurus, arah hadap badan (rad)
         mode: 'line', cpsi: 0, wasCircling: false,      // mode jalan: 'line' | 'circle'
         laughing: false, laugh: 0, laughPh: 0,
         gdy: null                                       // koreksi tinggi ke tanah (unit model), dihaluskan
     };
 
-    var triggerCheer = function () {
-        if (A.cheering) return;
-        A.waving = false;
-        A.cheering = true;
-        A.cheerStart = performance.now() / 1000;
-    };
-
-    var triggerWave = function () {
-        if (A.cheering || A.waving) return;
-        A.waving = true;
-        A.waveStart = performance.now() / 1000;
-    };
+    // logika cheer ada di kuromi_happy.js, wave di kuromi_wave.js
+    var triggerCheer = function () { L.cheerTrigger(A, performance.now() / 1000); };
+    var triggerWave = function () { L.waveTrigger(A, performance.now() / 1000); };
 
     var update = function (now) {
         var dt = A.last === null ? 0.016 : Math.min(0.05, Math.max(0.0005, now - A.last));
@@ -775,68 +396,28 @@ window.createKuromi = function (GL, cam) {
 
         /* ---- jadwal: idle -> (cheer | melambai, bergantian) -> idle ---- */
         if (!A.cheering && !A.waving && now - A.cycStart >= IDLE_LEN) {
-            if (A.nextAct === 0) { A.cheering = true; A.cheerStart = now; }
-            else { A.waving = true; A.waveStart = now; }
+            if (A.nextAct === 0) L.cheerTrigger(A, now);
+            else L.waveTrigger(A, now);
             A.nextAct = 1 - A.nextAct;
         }
-        var c = A.cheering ? now - A.cheerStart : -1;
-        if (A.cheering && c >= CHEER_LEN) { A.cheering = false; A.cycStart = now; c = -1; }
+        var c = L.cheerTime(A, now);                    // kuromi_happy.js
         var ti = now - A.cycStart;
 
-        /* ---- idle "melambai": envelope naik 0.45 dtk, tahan, turun 0.5 dtk ---- */
-        var wc = A.waving ? now - A.waveStart : -1;
-        if (A.waving && wc >= WAVE_LEN) { A.waving = false; A.cycStart = now; wc = -1; }
-        var wv = wc >= 0 ? smooth(wc / 0.45) * (1 - smooth((wc - (WAVE_LEN - 0.5)) / 0.5)) : 0;
-        A.wavePh += dt * 2 * Math.PI * WAVE_RATE * wv;
+        /* ---- idle "melambai" (kuromi_wave.js) ---- */
+        var wv = L.waveUpdate(A, now, dt);
 
-        /* ---- envelope senang ---- */
-        var happyOn = (c > 0.78 && c < HAPPY_END);
-        A.happy = damp(A.happy, happyOn ? 1 : 0, happyOn ? 9 : 3.2);
+        /* ---- envelope senang (kuromi_happy.js) ---- */
+        L.happyEnvelope(A, c, damp);
         /* ---- ketawa ---- */
         A.laugh = damp(A.laugh, (A.laughing && !A.cheering && !A.waving) ? 1 : 0, 7);
         var lf = A.laugh;                               // 0 = tenang, 1 = ketawa penuh
         A.laughPh += dt * 2 * Math.PI * 4.5;            // 4.5 "ha" per detik (ubah 4.5 untuk kecepatan ketawa)
-        var eyeOn = (c > 0.95 && c < HAPPY_END) || lf > 0.3 || wv > 0.5;
+        var eyeOn = L.happyEyes(c) || lf > 0.3 || wv > 0.5;
         A.eyeHappy = damp(A.eyeHappy, eyeOn ? 1 : 0, eyeOn ? 22 : 8);
         var h = A.happy;
 
-        /* ---- jalan ---- */
-        var wOn = A.walking && !A.cheering && !A.laughing && !A.waving;
-        A.walkAmt = damp(A.walkAmt, wOn ? 1 : 0, 6);
-        var w = A.walkAmt;
-        A.walkPh += dt * 2 * Math.PI * 1.1 * w;          // 1.1 siklus langkah / detik
-
-        /* ---- jalan: LURUS (satu arah) atau MUTER (lingkaran) ----
-           Posisi (A.x, A.z) disimpan terus, jadi setelah cheer/ketawa/melambai dia lanjut dari titik terakhir.
-           Berhenti jalan -> badan berputar menghadap kamera (heading 0), posisi tetap.
-           Arah maju badan pada heading psi = (sin psi, cos psi) di bidang (x, z). */
-        var moving = wOn && A.followPath;
-
-        if (moving && A.mode === 'circle') {
-            // MUTER: arah hadap terus berputar, posisi dihitung eksak sepanjang busur
-            if (!A.wasCircling) A.cpsi = A.heading;               // mulai dari arah hadap saat ini
-            var dpsi = CIRCLE_DIR * (WALK_SPEED * w / CIRCLE_R) * dt;
-            var p2 = A.cpsi + dpsi;
-            A.x += CIRCLE_DIR * CIRCLE_R * (Math.cos(A.cpsi) - Math.cos(p2));   // TRANSLASI
-            A.z += CIRCLE_DIR * CIRCLE_R * (Math.sin(p2) - Math.sin(A.cpsi));
-            A.cpsi = p2;
-            A.heading = p2;                                        // ROTASI: badan ikut menyinggung lingkaran
-            A.wasCircling = true;
-        } else {
-            // LURUS (atau berhenti): putar badan ke arah jalan / ke kamera
-            A.wasCircling = false;
-            var wantHeading = moving ? A.lineAngle : 0;
-            var err = Math.atan2(Math.sin(wantHeading - A.heading), Math.cos(wantHeading - A.heading));
-            var maxTurn = TURN_SPEED * dt;
-            A.heading += Math.max(-maxTurn, Math.min(maxTurn, err));   // ROTASI: berputar di tempat
-            if (moving && Math.abs(err) < 0.2) {
-                var step = w * WALK_SPEED * dt;
-                A.x += step * Math.sin(A.lineAngle);                    // TRANSLASI: bergeser lurus, satu arah
-                A.z += step * Math.cos(A.lineAngle);
-                A.walked += step;
-                if (A.walked >= STRAIGHT_DIST) A.walking = false;      // sampai tujuan -> berhenti (tidak putar balik)
-            }
-        }
+        /* ---- jalan (logika di kuromi_walk.js) ---- */
+        var w = L.walkUpdate(A, dt, damp);
         var wStep = Math.sin(A.walkPh), wCos = Math.cos(A.walkPh);
 
         /* ---- fase kontinu ---- */
@@ -854,8 +435,8 @@ window.createKuromi = function (GL, cam) {
         var sway = keys(ph, SWAY_KEYS) * ia;
 
         /* ---- kurva cheer ---- */
-        var sq = 0, pk = 0, ao = 0, jp = 0;
-        if (c >= 0) { sq = keys(c, SQ_KEYS); pk = keys(c, PITCH_KEYS); ao = keys(c, ARMOUT_KEYS); jp = keys(c, JUMP_KEYS); }
+        var cv = L.cheerCurves(c);
+        var sq = cv.sq, pk = cv.pk, ao = cv.ao, jp = cv.jp;
 
         var bob = Math.sin(2 * Math.PI * A.bobPh);
         var S = {
@@ -863,19 +444,24 @@ window.createKuromi = function (GL, cam) {
             walk: w, step: wStep, stepCos: wCos,
             px: A.x, pz: A.z, heading: A.heading,
             wave: wv, wavePh: A.wavePh,
-            waddle: w * 0.10 * wStep + wv * 0.06 * Math.sin(A.wavePh * 0.5),   // ARBITRARY ROTATE: goyang pinggul
-            hop: h * 0.025 * (1 + bob) + w * 0.07 * (0.5 + 0.5 * Math.cos(2 * A.walkPh)),
+            waddle: w * 0.10 * wStep,                                          // ARBITRARY ROTATE: goyang pinggul (+ wave: kuromi_wave.js)
+            hop: L.happyHop(h, bob) + w * 0.07 * (0.5 + 0.5 * Math.cos(2 * A.walkPh)),
             jump: jp,                                                          // TRANSLASI: lompatan cheer
             sy: 1 + 0.012 * br - 0.17 * sq + w * 0.02 * Math.cos(2 * A.walkPh),
             sxz: 1 - 0.006 * br + 0.10 * sq
         };
 
         /* ---- kepala ---- */
-        S.roll = -0.06 * sway + h * 0.07 * Math.sin(A.bobPh * Math.PI + 0.7) - w * 0.05 * wStep - wv * 0.10 * WAVE_SIDE;
-        S.yaw = 0.10 * sway + h * 0.05 * Math.sin(A.bobPh * Math.PI * 0.7) + wv * 0.06 * WAVE_SIDE * Math.sin(A.wavePh * 0.5);
-        S.pitch = 0.025 * br + pk - 0.04 * h + w * 0.08 - wv * 0.05;      // condong ke depan
-        S.headY = 0.03 * Math.sin(A.breath - 0.6) + 0.065 * sway - 0.05 * sq + h * 0.04 * bob - w * 0.03 * Math.cos(2 * A.walkPh)
-                  + wv * 0.025 * Math.sin(A.wavePh);
+        S.roll = -0.06 * sway - w * 0.05 * wStep;
+        S.yaw = 0.10 * sway;
+        S.pitch = 0.025 * br + w * 0.08;                                   // condong ke depan
+        S.headY = 0.03 * Math.sin(A.breath - 0.6) + 0.065 * sway - 0.05 * sq - w * 0.03 * Math.cos(2 * A.walkPh);
+        S.earFlare = 0;                                                    // diisi happy/wave di bawah
+        S.mouth = 0; S.blush = 0;
+
+        /* ---- pose happy (kuromi_happy.js) & wave (kuromi_wave.js): ditambahkan ke kepala/telinga/mulut/pipi ---- */
+        L.happyPose(S, A, h, pk, bob, now);
+        L.wavePose(S, wv, A.wavePh);
 
         /* ---- ketawa: tiap "ha" badan memantul, kepala mendongak & bergoyang, badan condong ke belakang ---- */
         var lph = A.laughPh, ha = Math.sin(lph), hh = 0.5 + 0.5 * ha;
@@ -891,8 +477,7 @@ window.createKuromi = function (GL, cam) {
 
         // telinga: tertinggal dari gerak kepala + mengembang saat menunduk
         A.earRoll = damp(A.earRoll, S.roll, 7);
-        S.earDelta = (A.earRoll - S.roll) * 2.4 + 0.05 * Math.sin(A.breath * 1.7) + 0.06 * h * Math.sin(now * 14);
-        S.earFlare = 0.06 * sq + 0.75 * Math.max(pk, 0) + 0.10 * wv * Math.max(0, Math.sin(A.wavePh));
+        S.earDelta = (A.earRoll - S.roll) * 2.4 + 0.05 * Math.sin(A.breath * 1.7) + L.happyEarShake(h, now);
 
         /* ---- kedip: sekali per siklus idle, garis datar ---- */
         var bp = (ti - 0.16) / 0.15;
@@ -901,15 +486,9 @@ window.createKuromi = function (GL, cam) {
         S.eyeK = 0.15 + 0.85 * A.eyeHappy;
 
         /* ---- mulut & pipi ---- */
-        S.mouth = h * (0.95 + 0.05 * Math.sin(now * 8));
-        S.blush = clamp01(h * 1.2);
         if (lf > 0.01) {
             S.mouth = Math.max(S.mouth, lf * (0.85 + 0.55 * hh));   // mulut terbuka lebar, membesar tiap "ha"
             S.blush = Math.max(S.blush, lf);
-        }
-        if (wv > 0.01) {
-            S.mouth = Math.max(S.mouth, 1.2 * wv);                 // senyum lebar saat melambai
-            S.blush = Math.max(S.blush, 0.8 * wv);
         }
         return S;
     };
@@ -932,7 +511,9 @@ window.createKuromi = function (GL, cam) {
         if (typeof gy !== "number" || !isFinite(gy)) gy = fwy;
         var sY = Math.hypot(M[4], M[5], M[6]) || 1;                 // skala vertikal model
         var dy = (gy + GROUND_LIFT - fwy) / sY;                     // koreksi dalam unit model
-        A.gdy = (A.gdy === null) ? dy : A.gdy + (dy - A.gdy) * 0.3; // dihaluskan supaya tidak patah di tanah miring
+        // langsung tepat tiap frame (tanpa jeda): titik asal model bisa bergeser saat formasi memutar yaw, dan koreksi yang
+        // dihaluskan akan tertinggal -> badan naik-turun ("bounce"). groundHeight sudah mulus, jadi tidak perlu dihaluskan.
+        A.gdy = dy;
         M = mul4(M, translateM(0, A.gdy, 0));                       // TRANSLASI: turun sampai menapak
 
         // HIERARCHY level atas: M (world) -> translasi ke posisi terakhir (px, pz) -> rotasi hadap -> root badan
@@ -979,7 +560,7 @@ window.createKuromi = function (GL, cam) {
         /* ===== LENGAN (pivot di bahu) =====
            idle: tangan terlipat dekat dada | membungkuk: melebar ke samping | senang: merapat ke dada
            jalan: berayun berlawanan dengan kaki satu sisi
-           melambai: lengan WAVE_SIDE terangkat ke samping-atas, lalu diayun kiri-kanan */
+           melambai: lengan L.WAVE.SIDE terangkat ke samping-atas, lalu diayun kiri-kanan */
         for (var si = 0; si < 2; si++) {
             var side = si === 0 ? -1 : 1;
             var swing = Math.sin(A.armPh + (side > 0 ? 0 : 1.1));
@@ -989,12 +570,8 @@ window.createKuromi = function (GL, cam) {
             var ry = -side * (0.10 * (1 - h) + 0.42 * h + 0.30 * S.laugh);
             var rz = side * ((0.08 + 0.05 * swing + 0.60 * S.ao) * (1 - h));
 
-            var wvS = (side === WAVE_SIDE) ? S.wave : 0;               // hanya satu tangan yang melambai
-            if (wvS > 0.001) {
-                rx = rx * (1 - wvS) + (-0.45) * wvS;                   // sedikit ke depan supaya tidak tertutup kepala
-                ry = ry * (1 - wvS);
-                rz = rz * (1 - wvS) + side * (1.5 + 0.32 * Math.sin(S.wavePh)) * wvS;   // ROTASI: terangkat + diayun
-            }
+            var wa = L.waveArm(side, [rx, ry, rz], S);                 // kuromi_wave.js: hanya satu tangan yang melambai
+            rx = wa[0]; ry = wa[1]; rz = wa[2];
 
             setM(pivotRot(root, side * 0.95, -0.05, 0.2, rx, ry, rz));
             draw(sphere, [side * 1.0, -0.45, 0.15], [0.30, 0.62, 0.32], WHITE, [0, 0, -side * 0.2]);
@@ -1061,18 +638,7 @@ window.createKuromi = function (GL, cam) {
 
         /* ===== DEKORASI: kilau & hati muncul berurutan (ikut M saja, tidak ikut squash) ===== */
         setM(M);
-        if (S.c >= 0) {
-            var hv = clamp01(h * 2);
-            for (var i = 0; i < DECOR.length; i++) {
-                var d = DECOR[i];
-                var u = (S.c - d.on) / 0.3;
-                if (u <= 0 || hv <= 0.01) continue;
-                var sc = d.size * easeOutBack(clamp01(u)) * hv * (1 + 0.12 * Math.sin(now * 7 + d.k));
-                var yy = d.y + 0.06 * Math.sin(now * 2.2 + d.k);
-                if (d.type === 'heart') drawHeart(d.x, yy, d.z, sc, d.col);
-                else drawStar(d.x, yy, d.z, sc, d.col, now * 1.5 + d.k, d.fat);   // bintang berputar
-            }
-        }
+        L.drawHappyDecor({ drawStar: drawStar, drawHeart: drawHeart }, S, now);   // kuromi_happy.js
 
         setM(M); // kembalikan supaya environment tidak terpengaruh
     };
@@ -1092,16 +658,7 @@ window.createKuromi = function (GL, cam) {
 
     var toggleWalk = function (mode, angle) {
         if (!onceFast("walk:" + mode)) return;
-        if (A.walking && A.mode === mode) { A.walking = false; return; }
-        if (typeof angle !== "number" && mode === 'line' && WALK_RELATIVE_TO_CAMERA) {
-            // yaw kamera dibaca dari matriks view: V[0] = cos(yaw), V[8] = -sin(yaw)
-            // dikurangi yaw dari M (arah hadap awal Kuromi di world.js), karena gerakan dihitung di ruang model
-            angle = Math.atan2(-cam.V[8], cam.V[0]) + WALK_SCREEN_OFFSET - A.myaw;
-        }
-        if (typeof angle === "number") A.lineAngle = angle;
-        A.mode = mode;
-        A.walked = 0;
-        A.walking = true;
+        L.walkToggle(A, mode, angle, cam);
     };
 
     // Tombol TIDAK dipasang di file ini: world.js yang memanggil API di bawah, hanya saat Kuromi sedang difokus.
@@ -1124,6 +681,7 @@ window.createKuromi = function (GL, cam) {
             else if (name === "circle") toggleWalk('circle');
         },
         stop: function () { A.walking = false; },
+        face: function (rad) { A.heading = rad || 0; A.lineAngle = A.heading; A.cpsi = A.heading; },   // set arah hadap (model space); face() = hadap kamera
         setGround: function (fn) { groundFn = (typeof fn === "function") ? fn : null; A.gdy = null; },
         walkPath: function (on) { A.followPath = !!on; }   // false = jalan di tempat
     };
