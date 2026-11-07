@@ -65,9 +65,9 @@ class BadtzMaru {
                 const tg = e.target && e.target.tagName;
                 if (tg === 'INPUT' || tg === 'TEXTAREA' || e.ctrlKey || e.metaKey || e.altKey) return;
                 const k = (e.key || '').toLowerCase();
-                if (k === 'j') this.walk();
+                if (k === 'c') this.walk();
                 else if (k === 't') this.rage();
-                else if (k === 'l') this.walkStraight();
+                else if (k === 'j') this.walkStraight();
                 else if (k === 'm') this.tripOver();
                 else if (k === 'd') this.dance();
                 else if (k === 'i') this.idle();

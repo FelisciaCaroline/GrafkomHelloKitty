@@ -35,6 +35,26 @@ var FORM_FACE_DEG = [-55, -55, -55];
 var FORM_TURN_RATE = 4;         // kecepatan berbalik badan
 var FORM_KEEP_POS = true;       // menjaga posisi tetap saat karakter berbalik (kalau karakter malah melompat saat berbalik, coba ganti false)
 
+// DEBUG: true = console menampilkan peringatan kalau posisi terlihat sebuah karakter melompat jauh dalam 1 frame
+// (berguna untuk mencari tahu karakter mana & di fase mana terjadi teleport). Matikan kalau sudah beres.
+var FORM_DEBUG = true;
+var FORM_JUMP = 1.5;            // jarak (unit world) per frame yang dianggap "lompatan"
+
+// Apakah focusOffset() karakter mengembalikan offset di ruang LOKAL (true) atau sudah DUNIA (false)? [Kuromi, Badtz, Hangyodon]
+// Badtz-Maru: focusOffset memakai M (sudah termasuk rotasi & skala) -> sudah dunia -> false (JANGAN diputar lagi).
+// Hangyodon: true (ikut perbaikan sebelumnya yang membuatnya "aman"). Kalau Hangyodon jadi aneh, coba ganti false.
+var FORM_OFFSET_LOCAL = [false, false, true];
+
+// Kalibrasi arah jalan otomatis [Kuromi, Badtz, Hangyodon]. Badtz berjalan ke arah (yaw model + heading miliknya sendiri),
+// dan heading itu bisa tidak 0 (mis. sesudah jalan melingkar / tantrum) sehingga jalan lurusnya tidak menuju slot.
+// Dengan true, formasi mengukur arah jalan sebenarnya beberapa saat setelah mulai jalan, lalu memutar yaw supaya lurus ke slot.
+var FORM_CALIBRATE = [false, true, true];
+
+// Koreksi manual arah hadap visual [Kuromi, Badtz, Hangyodon] dalam derajat, DITAMBAHKAN ke arah hadap model.
+// Isi kalau ada karakter yang depannya sudah pasti meleset dari FORM_FACE_DEG (mis. 180 untuk karakter yang tampak membelakangi).
+// Biasanya biarkan 0: Badtz sudah dikoreksi otomatis lewat kalibrasi (lihat FORM_CALIBRATE).
+var FORM_FACE_OFFSET_DEG = [0, 0, 0];
+
 // start / stop = aksi yang dipanggil untuk memulai & menghentikan jalan lurus tiap karakter (urutan = chars).
 // speed = kecepatan jalan lurus (unit/detik). HANYA dipakai untuk karakter yang posisinya tidak bisa dibaca
 // (tidak punya getPos() / focusOffset()), yaitu berhenti berdasarkan waktu. Kalau karakter berhenti kurang jauh
@@ -45,6 +65,18 @@ var FORM = [
     { start: function (o) { o.stop(); o.walk('line', 0); }, stop: function (o) { o.stop(); }, speed: 2.0 },   // Kuromi
     { start: function (o) { o.play("straight"); }, stop: function (o) { o.play("idle"); },   speed: 2.0 },   // Badtz-Maru
     { start: function (o) { o.toggle("walk"); },   stop: function (o) { o.play("idle"); },   speed: 2.0 }    // Hangyodon
+];
+// CANCEL = aksi yang dipanggil SAAT TOMBOL F DITEKAN untuk memotong animasi apa pun yang sedang berjalan
+// (dance, wave, happy, rage, tersandung, dll.) sebelum karakter berbalik & jalan ke slot (urutan = chars).
+// Badtz-Maru & Hangyodon: play("idle") membatalkan semua animasi. Kuromi: lihat di bawah (kalau Kuromi masih lanjut
+// wave / cheer setelah F ditekan, ganti dengan aksi pembatal wave / cheer milik Kuromi).
+var FORM_CANCEL = [
+    // Kuromi: o.cancel() (method baru di kuromi.js) memutus cheer, wave, ketawa, dan jalan sekaligus.
+    // Cadangan bila kuromi.js lama masih dipakai: stop() + laugh(false). Itu hanya mematikan ketawa & jalan;
+    // cheer / wave tidak bisa dipotong (harus tunggu selesai, maks 4.4 dtk), dan Kuromi baru mulai jalan sesudahnya.
+    function (o) { if (o.cancel) o.cancel(); else { o.stop(); if (o.laugh) o.laugh(false); } },   // Kuromi
+    function (o) { o.play("idle"); },    // Badtz-Maru
+    function (o) { o.play("idle"); }     // Hangyodon
 ];
 // ANIMASI SETELAH SEMUA KARAKTER SAMPAI & SELESAI BERBALIK (urutan = chars: Kuromi, Badtz-Maru, Hangyodon).
 // Tiap karakter punya daftar langkah { t: detik sejak SEMUA siap, run: fungsi }. Langkah dijalankan berurutan sesuai t.
@@ -83,9 +115,18 @@ var formFaceDeg = function (i) {
 // posisi dunia karakter saat ini [x, z] bila bisa dibaca, null kalau tidak
 var charPos = function (i) {
     var c = chars[i], o = c.obj;
-    if (o.worldXZ) return o.worldXZ(c.M);                       // Kuromi: dihitung langsung dari M, selalu terbaru
+    modelMatrix(c);                                             // selalu segarkan c.M dari c.x / c.z / c.yaw sekarang (hindari data basi)
+    if (o.worldXZ) return o.worldXZ(c.M);                       // Kuromi: dihitung langsung dari M
     if (o.getPos) { var p = o.getPos(); if (p) return [p[0], p[2]]; }
-    if (o.focusOffset) { var fo = o.focusOffset(c.M); return [c.x + fo[0], c.z + fo[2]]; }
+    if (o.focusOffset) {
+        var fo = o.focusOffset(c.M);
+        if (FORM_OFFSET_LOCAL[i]) {
+            // offset di ruang LOKAL: putar sebesar yaw (sama dengan modelMatrix) sebelum dijumlah
+            var cd = Math.cos(c.yaw), sd = Math.sin(c.yaw);
+            return [c.x + cd * fo[0] + sd * fo[2], c.z - sd * fo[0] + cd * fo[2]];
+        }
+        return [c.x + fo[0], c.z + fo[2]];                      // sudah dunia (M sudah memuat rotasi & skala)
+    }
     return null;
 };
 // ubah arah hadap TANPA membuat karakter melompat.
@@ -106,6 +147,26 @@ var setYaw = function (c, i, yaw) {
         c.z += dz - nz;
     }
 };
+// berhenti TANPA membuat karakter teleport.
+// Kenapa bisa teleport: beberapa aksi berhenti (mis. play("idle")) mengembalikan offset jalan ke 0, sehingga karakter
+// pindah ke titik asal modelnya (c.x, c.z). Solusi: catat posisi terlihat sebelum stop, jalankan stop, lalu geser
+// c.x, c.z sebesar selisihnya supaya posisi terlihat sesudah stop sama dengan sebelumnya.
+var stopKeep = function (c, i) {
+    modelMatrix(c);
+    var p0 = charPos(i);                                        // posisi terlihat sebelum stop
+    FORM[i].stop(c.obj);
+    if (!p0) return;
+    modelMatrix(c);
+    var p1 = charPos(i);                                        // posisi terlihat sesudah stop
+    if (p1) {
+        var jx = p0[0] - p1[0], jz = p0[1] - p1[1];
+        if (FORM_DEBUG && Math.hypot(jx, jz) > 0.05) {
+            console.log("[formasi] " + c.name + " bergeser " + Math.hypot(jx, jz).toFixed(2) + " saat stop, dikoreksi");
+        }
+        c.x += jx;
+        c.z += jz;
+    }
+};
 // berbalik halus menuju targetYaw; true bila sudah menghadap
 var formTurn = function (c, i, targetYaw, dt) {
     var diff = wrapAngle(targetYaw - c.yaw);
@@ -118,14 +179,21 @@ var formTurn = function (c, i, targetYaw, dt) {
 };
 
 var formStart = function () {
-    if (form.phase === "turn1" || form.phase === "march" || form.phase === "finale") return;   // sedang berjalan: abaikan
+    if (form.phase === "turn1" || form.phase === "march") return;   // sedang berbaris: abaikan (animasi akhir BOLEH disela)
+    // potong animasi yang sedang berjalan (termasuk animasi akhir formasi sebelumnya) sebelum berjalan ke slot
     chars.forEach(function (c, i) {
+        try { if (FORM_CANCEL[i]) FORM_CANCEL[i](c.obj); } catch (e) { console.warn("[formasi] cancel gagal untuk " + c.name, e); }
+    });
+    chars.forEach(function (c, i) {
+        modelMatrix(c);                                           // posisi terbaca harus sesuai kondisi sekarang
         var p = charPos(i) || [c.x, c.z];
         var s = formSlot(i);
         var vx = s[0] - p[0], vz = s[1] - p[1];
         c.fSlot = s;
         c.fDone = Math.hypot(vx, vz) <= 0.05;                         // sudah di slot: tidak perlu jalan
         c.fHead = c.fDone ? c.yaw : Math.atan2(vx, vz);               // yaw 0 = +z, sama seperti modelMatrix()
+        c.fLastP = null;
+        c.fHeadOff = 0;                                               // selisih arah hadap visual vs yaw model (diisi kalibrasi)
     });
     form.phase = "turn1";
 };
@@ -134,6 +202,19 @@ var formUpdate = function (t) {
     var dt = form.last === null ? 0.016 : Math.min(0.05, Math.max(0.0005, t - form.last));
     form.last = t;
     var ready = true;
+
+    // detektor lompatan (hanya untuk debug): bandingkan posisi terlihat dengan frame sebelumnya
+    if (FORM_DEBUG && form.phase !== "idle" && form.phase !== "formed") {
+        chars.forEach(function (c, i) {
+            var p = charPos(i);
+            if (p && c.fLastP && Math.hypot(p[0] - c.fLastP[0], p[1] - c.fLastP[1]) > FORM_JUMP) {
+                console.warn("[formasi] LOMPAT " + c.name + " fase=" + form.phase + " dari [" +
+                    c.fLastP[0].toFixed(2) + ", " + c.fLastP[1].toFixed(2) + "] ke [" +
+                    p[0].toFixed(2) + ", " + p[1].toFixed(2) + "]");
+            }
+            c.fLastP = p;
+        });
+    }
 
     if (form.phase === "turn1") {
         // 1. tiap karakter berbalik menghadap slot barisnya
@@ -147,6 +228,7 @@ var formUpdate = function (t) {
                 var s = p || [c.x, c.z];
                 var dist = Math.hypot(c.fSlot[0] - s[0], c.fSlot[1] - s[1]);
                 c.fTimed = !p;                                        // posisi tak terbaca -> berhenti berdasarkan waktu
+                c.fMin = dist; c.fCalN = 0; c.fCalP = p;              // untuk deteksi kelewatan & kalibrasi arah
                 c.fEnd = t + dist / FORM[i].speed;
                 FORM[i].start(c.obj);
             });
@@ -162,15 +244,43 @@ var formUpdate = function (t) {
                     arrived = t >= c.fEnd;
                 } else {
                     var p = charPos(i);
-                    // sisa jarak searah jalan; <= 0 berarti sudah sampai / terlewat
-                    arrived = p ? ((c.fSlot[0] - p[0]) * Math.sin(c.fHead) + (c.fSlot[1] - p[1]) * Math.cos(c.fHead) <= 0.05) : true;
+                    if (!p) {
+                        arrived = true;
+                    } else {
+                        var dist = Math.hypot(c.fSlot[0] - p[0], c.fSlot[1] - p[1]);
+                        // kalibrasi arah: ukur arah jalan sebenarnya, lalu putar yaw supaya lurus ke slot
+                        if (FORM_CALIBRATE[i] && c.fCalN < 4 && c.fCalP && Math.hypot(p[0] - c.fCalP[0], p[1] - c.fCalP[1]) > 0.4) {
+                            var ang = Math.atan2(p[0] - c.fCalP[0], p[1] - c.fCalP[1]);        // arah jalan sebenarnya
+                            var want = Math.atan2(c.fSlot[0] - p[0], c.fSlot[1] - p[1]);       // arah yang seharusnya
+                            var err = wrapAngle(want - ang);
+                            c.fCalN++;
+                            if (Math.abs(err) > 0.04) {
+                                if (FORM_DEBUG) console.log("[formasi] " + c.name + " kalibrasi arah " + (err * 180 / Math.PI).toFixed(1) + " derajat");
+                                setYaw(c, i, c.yaw + err);
+                            }
+                            c.fHead = want;
+                            // sekarang arah jalan = want. Karena arah jalan = yaw + heading milik karakter, selisihnya = heading karakter.
+                            // Arah hadap visual = yaw + heading, jadi di akhir yaw harus dikurangi selisih ini.
+                            c.fHeadOff = wrapAngle(want - c.yaw);
+                            if (FORM_DEBUG) console.log("[formasi] " + c.name + " heading bawaan " + (c.fHeadOff * 180 / Math.PI).toFixed(1) + " derajat (dikompensasi saat berbalik akhir)");
+                            c.fCalP = charPos(i);
+                            c.fMin = dist;
+                        }
+                        if (dist < c.fMin) c.fMin = dist;
+                        var calOk = !FORM_CALIBRATE[i] || c.fCalN > 0;
+                        // sampai: sisa jarak searah jalan <= 0, ATAU mulai menjauh dari slot (sudah kelewatan)
+                        arrived = ((c.fSlot[0] - p[0]) * Math.sin(c.fHead) + (c.fSlot[1] - p[1]) * Math.cos(c.fHead) <= 0.05) ||
+                                  (calOk && dist > c.fMin + 0.3);
+                    }
                 }
-                if (arrived) { FORM[i].stop(c.obj); c.fDone = true; }
+                if (arrived) { stopKeep(c, i); c.fDone = true; }   // stop tanpa teleport
             }
             if (!c.fDone) { allFormed = false; return; }        // masih jalan
             var deg = formFaceDeg(i);
             if (deg === null) return;                           // tidak perlu berbalik
-            if (!formTurn(c, i, deg * Math.PI / 180, dt)) allFormed = false;
+            // yaw akhir = arah hadap yang diinginkan - heading bawaan karakter - koreksi manual, supaya hadap VISUAL = deg
+            var yawGoal = deg * Math.PI / 180 - (c.fHeadOff || 0) - (FORM_FACE_OFFSET_DEG[i] || 0) * Math.PI / 180;
+            if (!formTurn(c, i, wrapAngle(yawGoal), dt)) allFormed = false;
         });
         if (allFormed) {                                        // SEMUA sudah sampai & selesai berbalik
             form.phase = "finale";
@@ -195,6 +305,7 @@ var formUpdate = function (t) {
 // Cetak posisi & arah hadap semua karakter saat ini (tombol P), siap ditempel ke kode
 var printFormation = function () {
     var slots = chars.map(function (c, i) {
+        modelMatrix(c);
         var p = charPos(i) || [c.x, c.z];
         return "    [" + p[0].toFixed(1) + ", " + p[1].toFixed(1) + "]" + (i < chars.length - 1 ? "," : " ") + "   // " + c.name;
     }).join("\n");

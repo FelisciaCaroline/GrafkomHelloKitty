@@ -4,6 +4,7 @@
 //   W A S D (Q / E)  = geser titik bidik kamera (maju/mundur/kiri/kanan, turun/naik)
 //   I H J K L M T N R = animasi karakter yang sedang difokus (lihat HUD)
 //   F                = FORMASI: semua karakter jalan ke slot barisnya, lalu menghadap arah yang ditentukan
+//   X                = sembunyikan / tampilkan panel HUD (untuk screen recording)
 //   P                = cetak posisi & arah hadap SEMUA karakter ke console (siap ditempel ke FORM_SLOTS / FORM_FACE_DEG di formation.js)
 //   Badtz: J jalan rotasi, L jalan lurus, M jamur tumbuh + tersandung, T marah, N dance, I idle, R reset posisi
 //   Hangyodon: I idle, H happy, J walk (toggle), K circle (toggle), L slip & dry
@@ -64,8 +65,8 @@ chars[0].actions = [
 ];
 chars[1].actions = [
     { key: "i", label: "Idle",          run: function (o) { o.play("idle"); } },
-    { key: "j", label: "Jalan Rotasi",  run: function (o) { o.play("walk"); } },
-    { key: "l", label: "Jalan Lurus",   run: function (o) { o.play("straight"); } },
+    { key: "c", label: "Jalan Rotasi",  run: function (o) { o.play("walk"); } },
+    { key: "j", label: "Jalan Lurus",   run: function (o) { o.play("straight"); } },
     { key: "m", label: "Tersandung Jamur", run: function (o) { o.play("trip"); } },
     { key: "t", label: "Marah",         run: function (o) { o.play("rage"); } },
     { key: "n", label: "Dance",         run: function (o) { o.play("dance"); } },
@@ -75,7 +76,7 @@ chars[2].actions = [
     { key: "i", label: "Idle",        run: function (o) { o.play("idle"); } },
     { key: "h", label: "Happy",       run: function (o) { o.play("happy"); } },
     { key: "j", label: "Walk",        run: function (o) { o.toggle("walk"); } },      // jalan lurus; tekan J lagi = berhenti
-    { key: "k", label: "Circle",      run: function (o) { o.toggle("circle"); } },    // jalan melingkar; tekan K lagi = berhenti
+    { key: "c", label: "Circle",      run: function (o) { o.toggle("circle"); } },    // jalan melingkar; tekan K lagi = berhenti
     { key: "l", label: "Slip & Dry",  run: function (o) { o.play("slip"); } }         // terpeleset -> jatuh -> bangun -> mengeringkan badan
 ];
 chars.forEach(function (c) { c.y = 0; c.yaw = (c.yawDeg || 0) * Math.PI / 180; c.M = new Float32Array(16); });
@@ -107,13 +108,19 @@ var pan = [0, 0, 0];                  // geseran titik bidik oleh W A S D Q E
 
 var clampPitch = function () { camPitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, camPitch)); };
 
+var hudVisible = true;               // tombol X: sembunyikan / tampilkan panel (untuk screen recording)
+var toggleHud = function () {
+    hudVisible = !hudVisible;
+    if (HUD) HUD.style.display = hudVisible ? "" : "none";
+};
+
 var updateHud = function () {
     if (!HUD) return;
     var list = chars.map(function (c, i) { return (i === active ? "▶ " : "   ") + i + " = " + c.name; });
     var acts = chars[active].actions.map(function (a) { return a.key.toUpperCase() + " = " + a.label; });
     HUD.textContent = list.join("\n") + "\n\n" + chars[active].name + ": " + acts.join("   ") +
         "\nF = semua karakter berbaris (formasi)   P = cetak posisi ke console" +
-        "\nWASD/QE = geser kamera   drag = putar   scroll = zoom";
+        "\nWASD/QE = geser kamera   drag = putar   scroll = zoom   X = sembunyikan panel ini";
 };
 
 var focusOn = function (i) {
@@ -209,6 +216,7 @@ window.addEventListener("keydown", function (e) {
     if (k === "0" || k === "1" || k === "2") focusOn(+k);
     if (!e.ctrlKey && !e.metaKey) {
         if (k === "f") formation.start();                         // FORMASI: berlaku untuk SEMUA karakter
+        if (k === "x") toggleHud();                               // sembunyikan / tampilkan panel
         if (k === "p") formation.print();                    // cetak posisi & arah hadap ke console
         var ch = chars[active];
         ch.actions.forEach(function (a) { if (a.key === k) a.run(ch.obj); });
